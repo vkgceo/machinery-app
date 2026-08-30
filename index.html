@@ -167,11 +167,16 @@
     <h2 class="section-title">Daily Entry</h2>
     <div class="card">
       <div class="field">
+        <label>Date</label>
+        <input type="date" id="entryDateInput" onchange="onEntryContextChange()">
+      </div>
+      <div class="field">
         <label>Machine</label>
         <select id="entryMachine" onchange="onMachineChange()">
           <option value="">Select a machine...</option>
         </select>
       </div>
+      <div id="entryEditNotice" class="msg warn hidden"></div>
       <div class="field">
         <label>Status</label>
         <select id="entryStatus" onchange="onStatusChange()">
@@ -198,7 +203,7 @@
       <button class="btn btn-primary" id="saveEntryBtn" onclick="saveEntry()">Save Entry</button>
     </div>
 
-    <h2 class="section-title">Today's Entries</h2>
+    <h2 class="section-title" id="entriesListTitle">Today's Entries</h2>
     <div class="card" style="padding:6px 10px;">
       <table id="todayTable">
         <tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>
@@ -435,6 +440,7 @@ async function afterLogin(){
   }
   document.getElementById('todayLabel').textContent =
     new Date().toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+  document.getElementById('entryDateInput').value = todayIST();
   dlog('Step 2c: app screen should now be visible. Loading machines...');
 
   await loadMachines();
@@ -492,17 +498,91 @@ async function loadMachines(){
   });
 }
 
+let editingEntryId = null;
+
+// Mirrors the RLS UPDATE window for Operator on daily_log
+// (schema.sql: date >= today - 2 days). Kept in sync manually since this
+// is UI-side guidance only — the database is the real enforcement point.
+function operatorEditFloor(){
+  const today = todayIST();
+  const d = new Date(today + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 2);
+  return d.toISOString().slice(0, 10);
+}
+
 function onMachineChange(){
+  refreshEntryFormForSelection();
+}
+function onEntryContextChange(){
+  refreshEntryFormForSelection();
+}
+
+// ============================================================
+// EDIT ENTRY — checks whether an entry already exists for the
+// selected Machine + Date. If so, loads its REAL saved values so a
+// correction is accurate (rather than guessing Opening from the
+// machine's current live reading, which would be wrong if today's
+// entry was already saved once with a mistake). If not, falls back
+// to the original new-entry auto-fill behaviour.
+// ============================================================
+async function refreshEntryFormForSelection(){
   const id = document.getElementById('entryMachine').value;
   selectedMachine = machines.find(m => m.id === id) || null;
+  const dateVal = document.getElementById('entryDateInput').value || todayIST();
+
   document.getElementById('entryClosing').value = '';
   document.getElementById('conflictWarning').classList.add('hidden');
+  document.getElementById('entryEditNotice').classList.add('hidden');
+  document.getElementById('saveEntryBtn').disabled = false;
+  editingEntryId = null;
+
   if(!selectedMachine){
     document.getElementById('entryOpening').value = '';
     return;
   }
-  const hrs = machineHours[id] || { meter_hrs: 0 };
-  document.getElementById('entryOpening').value = Number(hrs.meter_hrs).toFixed(1);
+
+  const { data: existing, error } = await supa
+    .from('daily_log')
+    .select('id, status, opening, closing, remarks, needs_review')
+    .eq('machine_id', selectedMachine.id)
+    .eq('date', dateVal)
+    .maybeSingle();
+
+  if(error){
+    showAppMsg('error', 'Could not check for an existing entry: ' + error.message);
+    return;
+  }
+
+  const noticeEl = document.getElementById('entryEditNotice');
+
+  if(existing){
+    // EDIT MODE — load the row's own stored values.
+    editingEntryId = existing.id;
+    document.getElementById('entryStatus').value = existing.status;
+    document.getElementById('entryOpening').value = Number(existing.opening).toFixed(1);
+    document.getElementById('entryClosing').value = Number(existing.closing).toFixed(1);
+    document.getElementById('entryRemarks').value = existing.remarks || '';
+    onClosingInput();
+
+    const blocked = (currentRole === 'operator' && dateVal < operatorEditFloor());
+    if(blocked){
+      noticeEl.textContent = 'This entry is older than 2 days — only a GM or CEO can edit it. Ask them to make this correction.';
+      noticeEl.classList.remove('hidden');
+      document.getElementById('saveEntryBtn').disabled = true;
+    } else {
+      noticeEl.textContent = 'Editing an existing entry for ' + dateVal + ' — Save will overwrite it.';
+      noticeEl.classList.remove('hidden');
+    }
+  } else {
+    // NEW ENTRY MODE — same auto-fill as before: Opening comes from the
+    // machine's current latest known reading. For a brand-new backdated
+    // entry (not today), this is the LATEST reading, not necessarily what
+    // it was as of the selected date — worth double-checking in that case.
+    const hrs = machineHours[selectedMachine.id] || { meter_hrs: 0 };
+    document.getElementById('entryOpening').value = Number(hrs.meter_hrs).toFixed(1);
+    document.getElementById('entryStatus').value = 'Running';
+    document.getElementById('entryRemarks').value = '';
+  }
 }
 
 function onStatusChange(){
@@ -605,6 +685,15 @@ async function saveEntry(){
     showAppMsg('error', 'Select a machine first.');
     return;
   }
+  const dateVal = document.getElementById('entryDateInput').value || todayIST();
+  // Defensive guard, independent of the Save button's disabled DOM state:
+  // Operator's UPDATE rights on daily_log are restricted to the last 2
+  // days (RLS) — an edit of an older existing row would fail server-side
+  // anyway, so catch it here with a clear message instead.
+  if(currentRole === 'operator' && editingEntryId && dateVal < operatorEditFloor()){
+    showAppMsg('error', 'This entry is older than 2 days — only a GM or CEO can edit it.');
+    return;
+  }
   const status = document.getElementById('entryStatus').value;
   const opening = parseFloat(document.getElementById('entryOpening').value);
   let closing = parseFloat(document.getElementById('entryClosing').value);
@@ -623,7 +712,7 @@ async function saveEntry(){
   btn.innerHTML = '<span class="spinner"></span> Saving...';
 
   const { error } = await supa.from('daily_log').upsert({
-    date: todayIST(),
+    date: dateVal,
     machine_id: selectedMachine.id,
     status: status,
     opening: opening,
@@ -647,27 +736,30 @@ async function saveEntry(){
       ? 'Saved — flagged for GM review (closing was below the last reading).'
       : 'Entry saved.');
 
-  document.getElementById('entryClosing').value = '';
-  document.getElementById('entryRemarks').value = '';
-  document.getElementById('conflictWarning').classList.add('hidden');
   await loadMachines();
   await loadTodayEntries();
+  await refreshEntryFormForSelection(); // reload the just-saved row's real values, confirming the fix
 }
 
 async function loadTodayEntries(){
+  const dateVal = document.getElementById('entryDateInput').value || todayIST();
   const { data, error } = await supa
     .from('daily_log')
     .select('machine_id, total_hrs, status, needs_review')
-    .eq('date', todayIST())
+    .eq('date', dateVal)
     .order('machine_id');
+
+  const titleEl = document.getElementById('entriesListTitle');
+  titleEl.textContent = (dateVal === todayIST()) ? "Today's Entries" : 'Entries — ' + dateVal;
 
   const table = document.getElementById('todayTable');
   const emptyMsg = document.getElementById('todayEmpty');
   table.innerHTML = '<tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>';
 
-  if(error){ showAppMsg('error', 'Could not load today\'s entries: ' + error.message); return; }
+  if(error){ showAppMsg('error', 'Could not load entries: ' + error.message); return; }
 
   if(!data || data.length === 0){
+    emptyMsg.textContent = (dateVal === todayIST()) ? 'No entries yet today.' : 'No entries for this date.';
     emptyMsg.style.display = 'block';
     return;
   }
@@ -746,7 +838,10 @@ async function renderMachinesScreen(){
             <div class="card-title" style="font-weight:700; font-size:13px;">${escapeHtml(r.machine_id)} — ${escapeHtml(r.date)}</div>
             <div style="font-size:11.5px; color:var(--text-dim); margin:4px 0 8px;">Opening ${r.opening}, Closing ${r.closing}</div>
             <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:10px;">${escapeHtml(r.remarks || '')}</div>
-            <button class="btn btn-secondary" onclick="markReviewed(${r.id})">Mark Reviewed</button>
+            <div class="btn-row">
+              <button class="btn btn-primary" style="flex:1;" onclick="editFlaggedEntry('${escapeHtml(r.date)}', '${escapeHtml(r.machine_id)}')">Edit This Entry</button>
+              <button class="btn btn-secondary" style="flex:1;" onclick="markReviewed(${r.id})">Mark Reviewed</button>
+            </div>
           </div>`;
       });
       reviewSection.innerHTML = html;
@@ -780,6 +875,17 @@ async function markReviewed(logId){
   const { error } = await supa.from('daily_log').update({ needs_review: false }).eq('id', logId);
   if(error){ showAppMsg('error', error.message); return; }
   await renderMachinesScreen();
+}
+
+// Jumps to the Entry tab with the flagged row's Machine + Date preselected,
+// loading its real saved values via refreshEntryFormForSelection() so GM/CEO
+// can actually fix the numbers, not just dismiss the flag.
+function editFlaggedEntry(date, machineId){
+  goTo('entry');
+  document.getElementById('entryDateInput').value = date;
+  document.getElementById('entryMachine').value = machineId;
+  refreshEntryFormForSelection();
+  loadTodayEntries();
 }
 
 
