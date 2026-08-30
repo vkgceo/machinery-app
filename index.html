@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>VKG Machinery Status</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --header:#1A2332; --nav:#2C5F8A; --bg:#F0F4F8; --card:#FFFFFF;
+    --green:#16A34A; --amber:#D97706; --red:#DC2626; --gray:#9CA3AF;
+    --accent:#D97706; --text:#1A2332; --text-dim:#5B6B7D; --border:#E1E7EE;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg); color:var(--text); font-size:14px;}
+  .tabular{font-variant-numeric:tabular-nums;}
+  header{background:var(--header); color:#fff; padding:14px 16px; position:sticky; top:0; z-index:20;}
+  header .top-row{display:flex; justify-content:space-between; align-items:center;}
+  header h1{font-size:16px; margin:0; font-weight:700;}
+  header .sub{font-size:11px; color:#A9B7C8; margin-top:2px;}
+  .role-badge{background:#2A3648; color:#DCE6F0; font-size:10.5px; font-weight:700; padding:4px 9px;
+    border-radius:20px; text-transform:uppercase; letter-spacing:0.3px;}
+  .signout{background:none; border:1px solid #3D4B5F; color:#CFE0F0; font-size:11px; padding:5px 10px;
+    border-radius:7px; font-family:inherit;}
+  main{padding:14px; max-width:480px; margin:0 auto;}
+  .card{background:var(--card); border-radius:10px; padding:16px; box-shadow:0 1px 3px rgba(20,30,50,0.08);
+    margin-bottom:12px; border:1px solid var(--border);}
+  h2.section-title{font-size:13px; text-transform:uppercase; letter-spacing:0.6px; color:var(--text-dim);
+    margin:18px 0 8px; font-weight:700;}
+  h2.section-title:first-child{margin-top:0;}
+  label{font-size:11.5px; color:var(--text-dim); font-weight:600; display:block; margin-bottom:4px;}
+  .field{margin-bottom:14px;}
+  .field-row{display:flex; gap:8px;}
+  .field-row .field{flex:1;}
+  input, select{width:100%; padding:10px 11px; border:1px solid var(--border); border-radius:8px;
+    font-size:15px; background:#fff; font-family:inherit; color:var(--text);}
+  input:focus, select:focus{outline:2px solid var(--nav); outline-offset:1px;}
+  .btn{display:block; width:100%; text-align:center; padding:12px; border-radius:8px; border:none;
+    font-weight:700; font-size:14px; font-family:inherit; cursor:pointer;}
+  .btn-primary{background:var(--accent); color:#fff;}
+  .btn-primary:disabled{background:#E8C9A0; cursor:default;}
+  .btn-secondary{background:#fff; color:var(--header); border:1px solid var(--border);}
+  .readonly-box{background:#F6F8FA; border:1px dashed var(--border); border-radius:8px; padding:9px 10px;
+    font-size:13px; color:var(--text-dim);}
+  .readonly-box b{color:var(--text); font-size:15px;}
+  .msg{font-size:12.5px; padding:9px 11px; border-radius:8px; margin-bottom:12px;}
+  .msg.error{background:#FEE2E2; color:#991B1B;}
+  .msg.warn{background:#FFF7ED; color:#92400E; border:1px solid #FDE0B8;}
+  .msg.ok{background:#DCFCE7; color:#166534;}
+  .pill{display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px;}
+  .pill.green{background:#DCFCE7; color:#166534;} .pill.amber{background:#FEF3C7; color:#92400E;}
+  .pill.red{background:#FEE2E2; color:#991B1B;} .pill.gray{background:#F1F3F5; color:#4B5563;}
+  table{width:100%; border-collapse:collapse; font-size:12px;}
+  th{text-align:left; font-size:10.5px; color:var(--text-dim); text-transform:uppercase; padding:6px 4px; border-bottom:1px solid var(--border);}
+  th.num, td.num{text-align:right;}
+  td{padding:8px 4px; border-bottom:1px solid #EEF1F5;}
+  tr:last-child td{border-bottom:none;}
+  .gate-overlay{position:fixed; inset:0; background:rgba(20,30,50,0.55); z-index:40;
+    display:flex; align-items:flex-end; justify-content:center;}
+  .gate-overlay.hidden{display:none;}
+  .gate-sheet{background:#fff; width:100%; max-width:480px; border-radius:16px 16px 0 0; padding:18px 16px 20px;
+    max-height:82vh; overflow-y:auto;}
+  .gate-item{border:1px solid var(--border); border-radius:10px; padding:11px; margin-bottom:10px;}
+  .gate-item .gm-top{display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;}
+  .gate-item textarea{width:100%; border:1px solid var(--border); border-radius:6px; padding:7px; font-size:12.5px;
+    font-family:inherit; resize:none; height:36px; margin-top:6px;}
+  .chip-row{display:flex; gap:6px; margin-top:6px;}
+  .chip{flex:1; text-align:center; padding:8px 4px; border-radius:7px; border:1px solid var(--border);
+    background:#fff; font-size:11.5px; font-weight:700; color:var(--text-dim);}
+  .chip.selected-green{background:#DCFCE7; border-color:#B7E4C7; color:#166534;}
+  .chip.selected-red{background:#FEE2E2; border-color:#F3B9B9; color:#991B1B;}
+  .hidden{display:none !important;}
+  /* ---------- TABS ---------- */
+  .screen{display:none;}
+  .screen.active{display:block;}
+  nav.tabbar{position:fixed; bottom:0; left:0; right:0; background:var(--nav);
+    display:flex; z-index:20; box-shadow:0 -2px 8px rgba(0,0,0,0.15);}
+  nav.tabbar button{flex:1; background:none; border:none; color:#CFE0F0; font-size:11px;
+    padding:9px 2px 8px; display:flex; flex-direction:column; align-items:center; gap:3px;
+    font-family:inherit;}
+  nav.tabbar button .ic{font-size:17px; line-height:1;}
+  nav.tabbar button.active{color:#fff; background:rgba(255,255,255,0.08);}
+  body{padding-bottom:60px;}
+  .machine-name{font-weight:700; font-size:13px;}
+  .machine-cat{font-size:10.5px; color:var(--text-dim);}
+  .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;}
+  .mini-label{font-size:10.5px; color:var(--text-dim); text-transform:uppercase;}
+  .mini-value{font-size:14px; font-weight:800; margin-top:2px;}
+  .btn-row{display:flex; gap:8px;}
+  .btn-row .btn{flex:1;}
+  .flag-tag{background:#FEE2E2; color:#991B1B; font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:5px;}
+  .confirm-box{background:#FFF7ED; border:1px solid #FDE0B8; border-radius:8px; padding:10px; font-size:12px;
+    color:#7C4A03; margin:10px 0;}
+  .modal-overlay{position:fixed; inset:0; background:rgba(20,30,50,0.55); z-index:40;
+    display:flex; align-items:flex-end; justify-content:center;}
+  .modal-overlay.hidden{display:none;}
+  .modal-sheet{background:#fff; width:100%; max-width:480px; border-radius:16px 16px 0 0; padding:18px 16px 20px;
+    max-height:85vh; overflow-y:auto;}
+  .center-screen{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;}
+  .login-box{max-width:340px; width:100%;}
+  .login-box h1{font-size:20px; margin-bottom:4px;}
+  .login-box .sub{color:var(--text-dim); font-size:12.5px; margin-bottom:20px;}
+  .spinner{display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,0.4);
+    border-top-color:#fff; border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:-2px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN SCREEN ============ -->
+<div id="loginScreen" class="center-screen">
+  <div class="login-box">
+    <h1>VKG Machinery Status</h1>
+    <div class="sub">Sign in with your VKG account</div>
+    <div id="loginMsg"></div>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="loginEmail" autocomplete="username" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="loginPassword" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <button class="btn btn-primary" id="loginBtn" onclick="doLogin()">Sign In</button>
+    <div id="debugLog" style="margin-top:16px; font-size:10.5px; color:var(--text-dim); font-family:monospace; white-space:pre-wrap; max-height:200px; overflow-y:auto; background:#F6F8FA; border:1px solid var(--border); border-radius:6px; padding:8px; display:none;"></div>
+  </div>
+</div>
+
+<!-- ============ NO ROLE SCREEN ============ -->
+<div id="noRoleScreen" class="center-screen hidden">
+  <div class="login-box">
+    <h1>No Access Yet</h1>
+    <div class="sub">You're signed in, but your account isn't set up for the Machinery app yet. Ask your GM or CEO to add you.</div>
+    <div id="noRoleAccountInfo" class="readonly-box" style="margin-bottom:16px;"></div>
+    <button class="btn btn-secondary" onclick="doSignOut()">Sign Out</button>
+  </div>
+</div>
+
+<!-- ============ MAIN APP ============ -->
+<div id="appScreen" class="hidden">
+  <header>
+    <div class="top-row">
+      <div>
+        <h1>VKG Machinery Status</h1>
+        <div class="sub" id="todayLabel"></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="role-badge" id="roleBadge"></span>
+      </div>
+    </div>
+    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+      <button class="signout" onclick="doSignOut()">Sign Out</button>
+      <div id="headerExcelActions" class="hidden" style="display:flex; gap:8px; flex:1;">
+        <a class="btn btn-secondary" href="VKG_Excel_Template.xlsx" download
+           style="flex:1; text-decoration:none; padding:6px 10px; font-size:11px;">⬇ Template</a>
+        <button class="btn btn-primary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="openUploadModal()">⬆ Upload Excel</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="screen active" id="screen-entry">
+    <div id="appMsg"></div>
+
+    <h2 class="section-title">Daily Entry</h2>
+    <div class="card">
+      <div class="field">
+        <label>Machine</label>
+        <select id="entryMachine" onchange="onMachineChange()">
+          <option value="">Select a machine...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select id="entryStatus" onchange="onStatusChange()">
+          <option>Running</option><option>Idle</option><option>Breakdown</option><option>Under Service</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Opening Meter Hrs</label>
+          <input type="text" id="entryOpening" readonly>
+        </div>
+        <div class="field">
+          <label>Closing Meter Hrs</label>
+          <input type="number" id="entryClosing" step="0.1" oninput="onClosingInput()">
+        </div>
+      </div>
+      <div id="conflictWarning" class="msg warn hidden">
+        Closing is below the last recorded reading. This will save with a review flag for the GM.
+      </div>
+      <div class="field">
+        <label>Remarks</label>
+        <input type="text" id="entryRemarks" placeholder="Optional">
+      </div>
+      <button class="btn btn-primary" id="saveEntryBtn" onclick="saveEntry()">Save Entry</button>
+    </div>
+
+    <h2 class="section-title">Today's Entries</h2>
+    <div class="card" style="padding:6px 10px;">
+      <table id="todayTable">
+        <tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>
+      </table>
+      <div id="todayEmpty" style="padding:10px 4px; color:var(--text-dim); font-size:12.5px;">No entries yet today.</div>
+    </div>
+    </div>
+
+    <div class="screen" id="screen-machines">
+      <div id="reviewQueueSection"></div>
+      <h2 class="section-title">Machine Master</h2>
+      <div id="machinesListContainer">
+        <div style="padding:20px; text-align:center; color:var(--text-dim); font-size:12.5px;">Loading machines...</div>
+      </div>
+    </div>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="tab-btn active" data-tab="entry" onclick="goTo('entry')"><span class="ic">✎</span>Entry</button>
+    <button class="tab-btn" data-tab="machines" onclick="goTo('machines')"><span class="ic">⚙</span>Machines</button>
+  </nav>
+</div>
+
+<!-- ============ GATE WARNING (GM/CEO only, dismissible) ============ -->
+<div class="gate-overlay hidden" id="gateOverlay">
+  <div class="gate-sheet">
+    <h3 style="margin:0 0 3px;">⚠️ Machines need attention</h3>
+    <div style="font-size:12px; color:var(--text-dim); margin-bottom:14px;">
+      These haven't been updated recently. Get your operator to log them, or fill it in yourself now. This will keep showing up until it's actually fixed.
+    </div>
+    <div id="gateItemsContainer"></div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-secondary" onclick="skipGate()">Skip for now</button>
+      <button class="btn btn-primary" onclick="goToEntryFromGate()">Fill Data Now</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ UPLOAD EXCEL MODAL (GM/CEO only) ============ -->
+<div class="modal-overlay hidden" id="uploadModal">
+  <div class="modal-sheet">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <h3 style="margin:0;">Upload Excel</h3>
+      <button class="btn btn-secondary" style="width:auto; padding:5px 12px;" onclick="closeUploadModal()">✕</button>
+    </div>
+    <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:14px;">
+      Uses the standard template — Daily Log, Diesel Purchase, Diesel Issue sheets.
+      Nothing is silently overwritten or skipped; anything that conflicts with
+      data already in the app is flagged for you to resolve.
+    </div>
+
+    <!-- STEP 1: file picker -->
+    <div id="uploadStep1">
+      <div class="field">
+        <label>Choose filled template (.xlsx)</label>
+        <input type="file" id="uploadFileInput" accept=".xlsx">
+      </div>
+      <button class="btn btn-primary" id="parseFileBtn" onclick="handleParseFile()">Parse &amp; Validate</button>
+      <div id="uploadParseMsg" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- STEP 2: validation summary + errors -->
+    <div id="uploadStep2" class="hidden">
+      <div id="uploadSummaryBox" class="readonly-box" style="margin-bottom:12px;"></div>
+      <div id="uploadErrorsBox"></div>
+
+      <!-- STEP 3: conflicts needing resolution -->
+      <div id="uploadConflictsSection" class="hidden">
+        <h2 class="section-title">Conflicts — Daily Log <span class="flag-tag">Resolve each one</span></h2>
+        <div style="margin-bottom:10px;">
+          <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:6px;">Resolve all remaining at once:</div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" style="font-size:11.5px; padding:8px;" onclick="resolveAllConflicts('app')">Keep App (all)</button>
+            <button class="btn btn-secondary" style="font-size:11.5px; padding:8px;" onclick="resolveAllConflicts('file')">Keep File (all)</button>
+            <button class="btn btn-secondary" style="font-size:11.5px; padding:8px;" onclick="resolveAllConflicts('both')">Keep Both (all)</button>
+          </div>
+        </div>
+        <div id="uploadConflictsList"></div>
+      </div>
+
+      <button class="btn btn-primary" id="commitUploadBtn" onclick="handleCommitOrFinish()" style="margin-top:14px;">Commit Upload</button>
+      <button class="btn btn-secondary" onclick="resetUploadModal()" style="margin-top:8px;">Start Over</button>
+    </div>
+
+    <!-- STEP 4: results -->
+    <div id="uploadStep3" class="hidden">
+      <div id="uploadResultsBox"></div>
+      <button class="btn btn-primary" onclick="closeUploadModal()" style="margin-top:12px;">Done</button>
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const SUPABASE_URL = 'https://dzqycclkqbrwjoqzfexg.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_TBBH0raBXrUBl_yZHEqP1g_-R_HNjCU';
+
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// No schema override — the new standalone project uses the client's
+// default "public" schema, since Machinery is the only app in it.
+
+// ============================================================
+// STATE
+// ============================================================
+let currentUser = null;
+let currentRole = null;
+let machines = [];          // {id, category, name, meter_offset}
+let machineHours = {};      // machine_id -> {meter_hrs, lifetime_hrs, meter_offset}
+let gateQueue = [];         // machines currently flagged for the gate warning
+let selectedMachine = null;
+
+// ============================================================
+// VISIBLE DEBUG LOG — writes directly onto the page, not just
+// the browser console, so nothing gets missed regardless of
+// which DevTools tab or browser tab is open.
+// ============================================================
+function dlog(msg){
+  const box = document.getElementById('debugLog');
+  box.style.display = 'block';
+  const time = new Date().toLocaleTimeString();
+  box.textContent += `[${time}] ${msg}\n`;
+  box.scrollTop = box.scrollHeight;
+}
+window.addEventListener('error', (e) => {
+  dlog('UNCAUGHT ERROR: ' + e.message + ' (' + e.filename + ':' + e.lineno + ')');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  dlog('UNHANDLED PROMISE REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
+
+function todayIST(){
+  // IST is UTC+5:30. Using this instead of the browser's local date keeps
+  // "today" consistent regardless of where a phone's clock/timezone is set,
+  // matching the plan's rule that all "today" logic uses Asia/Kolkata (§14).
+  const now = new Date();
+  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const ist = new Date(utcMs + (5.5 * 60 * 60000));
+  return ist.toISOString().slice(0,10);
+}
+
+// ============================================================
+// AUTH
+// ============================================================
+async function doLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const msgEl = document.getElementById('loginMsg');
+  const btn = document.getElementById('loginBtn');
+  msgEl.innerHTML = '';
+  document.getElementById('debugLog').textContent = '';
+  if(!email || !password){
+    msgEl.innerHTML = '<div class="msg error">Enter both email and password.</div>';
+    return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Signing in...';
+  try {
+    dlog('Step 1: calling signInWithPassword for ' + email);
+    const { data, error } = await supa.auth.signInWithPassword({ email, password });
+    dlog('Step 1 result: ' + (error ? ('ERROR — ' + error.message) : 'success, user id ' + data.user.id));
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+    if(error){
+      msgEl.innerHTML = '<div class="msg error">' + escapeHtml(error.message) + '</div>';
+      return;
+    }
+    currentUser = data.user;
+    dlog('Step 2: calling afterLogin()');
+    await afterLogin();
+    dlog('Step 2 finished — if the app screen is not visible now, something after this line failed silently.');
+  } catch(e) {
+    dlog('CAUGHT EXCEPTION in doLogin: ' + (e && e.message ? e.message : String(e)));
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+    msgEl.innerHTML = '<div class="msg error">Unexpected error — see log below.</div>';
+  }
+}
+
+async function doSignOut(){
+  await supa.auth.signOut();
+  currentUser = null; currentRole = null;
+  document.getElementById('appScreen').classList.add('hidden');
+  document.getElementById('noRoleScreen').classList.add('hidden');
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('loginEmail').value = '';
+  document.getElementById('loginPassword').value = '';
+}
+
+async function afterLogin(){
+  dlog('Step 2a: checking user_roles for this user...');
+  // Look up this person's role. No row = no access, by design (§14 RLS —
+  // fails closed rather than assuming a default role).
+  const { data: roleRow, error: roleErr } = await supa
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', currentUser.id)
+    .maybeSingle();
+
+  dlog('Step 2a result: ' + (roleErr ? ('ERROR — ' + roleErr.message) : ('role = ' + (roleRow ? roleRow.role : 'NONE FOUND'))));
+
+  if(roleErr){
+    document.getElementById('loginMsg').innerHTML =
+      '<div class="msg error">Could not check your access. ' + escapeHtml(roleErr.message) + '</div>';
+    return;
+  }
+  if(!roleRow){
+    dlog('No role row found — showing "No Access" screen for user_id=' + currentUser.id + ', email=' + currentUser.email);
+    document.getElementById('noRoleAccountInfo').innerHTML =
+      'Signed in as: <b>' + escapeHtml(currentUser.email) + '</b><br>User ID: <b>' + escapeHtml(currentUser.id) + '</b>';
+    document.getElementById('loginScreen').classList.add('hidden');
+    document.getElementById('noRoleScreen').classList.remove('hidden');
+    return;
+  }
+  currentRole = roleRow.role;
+  dlog('Step 2b: role confirmed as "' + currentRole + '" — switching screens now.');
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('noRoleScreen').classList.add('hidden');
+  document.getElementById('appScreen').classList.remove('hidden');
+  document.getElementById('roleBadge').textContent = currentRole.toUpperCase();
+  // Excel Template download + Upload are available to Operator/GM/CEO —
+  // owner decision (2026-08-30): Operator does bulk/daily data entry via
+  // Excel too, not just GM/CEO. Conflict RESOLUTION stays GM/CEO-only
+  // (see canResolveConflicts in the upload logic below) because Operator's
+  // UPDATE rights on daily_log are restricted to the last 2 days (RLS),
+  // so Operator resolving an older conflict would silently fail server-side.
+  if(currentRole === 'operator' || currentRole === 'gm' || currentRole === 'ceo'){
+    document.getElementById('headerExcelActions').classList.remove('hidden');
+  } else {
+    document.getElementById('headerExcelActions').classList.add('hidden');
+  }
+  document.getElementById('todayLabel').textContent =
+    new Date().toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+  dlog('Step 2c: app screen should now be visible. Loading machines...');
+
+  await loadMachines();
+  dlog('Step 2d: machines loaded (' + machines.length + ' found).');
+  // Gate is GM/CEO only — owner decision. Operators shouldn't have to make
+  // Resuming/Idle/Breakdown judgment calls; that belongs with the people
+  // equipped to make them, and blocking operators here was causing real
+  // friction that risked people abandoning the app entirely.
+  if(currentRole === 'gm' || currentRole === 'ceo'){
+    dlog('Step 2e: role is ' + currentRole + ' — checking gate...');
+    await checkGate();
+    dlog('Step 2e result: gate check done (' + gateQueue.length + ' items).');
+  } else {
+    dlog('Step 2e: role is ' + currentRole + ' — gate skipped, operators go straight to Daily Entry.');
+  }
+  await loadTodayEntries();
+  dlog('Step 2f: DONE. Everything completed with no errors.');
+}
+
+// Restore session on page reload (e.g. if you refresh mid-session)
+(async function initSession(){
+  const { data } = await supa.auth.getSession();
+  if(data.session){
+    currentUser = data.session.user;
+    await afterLogin();
+  }
+})();
+
+// ============================================================
+// MACHINES + HOURS
+// ============================================================
+async function loadMachines(){
+  const { data, error } = await supa.from('machines').select('id, category, name, meter_offset').order('id');
+  if(error){
+    showAppMsg('error', 'Could not load machines: ' + error.message);
+    return;
+  }
+  machines = data || [];
+
+  const { data: hoursData, error: hoursErr } = await supa.from('v_machine_hours').select('*');
+  if(hoursErr){
+    showAppMsg('error', 'Could not load machine hours: ' + hoursErr.message);
+    return;
+  }
+  machineHours = {};
+  (hoursData || []).forEach(r => machineHours[r.machine_id] = r);
+
+  const sel = document.getElementById('entryMachine');
+  sel.innerHTML = '<option value="">Select a machine...</option>';
+  machines.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.id + ' — ' + m.name + ' (' + m.category + ')';
+    sel.appendChild(opt);
+  });
+}
+
+function onMachineChange(){
+  const id = document.getElementById('entryMachine').value;
+  selectedMachine = machines.find(m => m.id === id) || null;
+  document.getElementById('entryClosing').value = '';
+  document.getElementById('conflictWarning').classList.add('hidden');
+  if(!selectedMachine){
+    document.getElementById('entryOpening').value = '';
+    return;
+  }
+  const hrs = machineHours[id] || { meter_hrs: 0 };
+  document.getElementById('entryOpening').value = Number(hrs.meter_hrs).toFixed(1);
+}
+
+function onStatusChange(){
+  const status = document.getElementById('entryStatus').value;
+  const closingInput = document.getElementById('entryClosing');
+  if(status !== 'Running'){
+    // Per §3.2: non-Running days close = open, total = 0.
+    const opening = document.getElementById('entryOpening').value;
+    if(opening) closingInput.value = opening;
+  }
+  onClosingInput();
+}
+
+function onClosingInput(){
+  if(!selectedMachine){ return; }
+  const opening = parseFloat(document.getElementById('entryOpening').value) || 0;
+  const closing = parseFloat(document.getElementById('entryClosing').value);
+  const warnEl = document.getElementById('conflictWarning');
+  warnEl.classList.toggle('hidden', isNaN(closing) || closing >= opening);
+}
+
+// ============================================================
+// GATE WARNING — GM/CEO only (owner decision). No longer a hard
+// block requiring per-machine Resuming/Idle/Breakdown answers —
+// just a dismissible warning naming what's stale. Skipping writes
+// nothing, so it reappears every login until the real fix happens:
+// an actual Daily Entry for that machine. Repetition is the point —
+// a couple of logins seeing this is meant to be the nudge that gets
+// it fixed, without ever blocking anyone from working.
+// ============================================================
+async function checkGate(){
+  const today = todayIST();
+
+  const { data: logs, error: logErr } = await supa
+    .from('daily_log')
+    .select('machine_id, date, status')
+    .order('date', { ascending: false });
+  if(logErr){ showAppMsg('error', 'Could not check gate: ' + logErr.message); return; }
+
+  const latestByMachine = {};
+  (logs || []).forEach(row => {
+    if(!latestByMachine[row.machine_id]) latestByMachine[row.machine_id] = row;
+  });
+
+  gateQueue = [];
+  const msPerDay = 86400000;
+  const todayDate = new Date(today + 'T00:00:00Z');
+
+  machines.forEach(m => {
+    const latest = latestByMachine[m.id];
+
+    if(latest && (latest.status === 'Breakdown' || latest.status === 'Under Service')){
+      gateQueue.push({ machine: m, reason: latest.status + ' since ' + latest.date });
+      return;
+    }
+
+    // Deliberately skips machines with zero history entirely — that's a
+    // fresh-deployment situation, not a "went silent" situation.
+    if(latest){
+      const daysSince = Math.floor((todayDate - new Date(latest.date + 'T00:00:00Z')) / msPerDay);
+      if(daysSince >= 3){
+        gateQueue.push({ machine: m, reason: 'No entry for ' + daysSince + ' days' });
+      }
+    }
+  });
+
+  if(gateQueue.length > 0) renderGateWarning();
+}
+
+function renderGateWarning(){
+  const container = document.getElementById('gateItemsContainer');
+  container.innerHTML = gateQueue.map(item => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px;
+      border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+      <div>
+        <b>${escapeHtml(item.machine.id)}</b>
+        <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(item.machine.name)}</div>
+      </div>
+      <span class="pill amber">${escapeHtml(item.reason)}</span>
+    </div>
+  `).join('');
+  document.getElementById('gateOverlay').classList.remove('hidden');
+}
+
+function skipGate(){
+  document.getElementById('gateOverlay').classList.add('hidden');
+}
+
+function goToEntryFromGate(){
+  document.getElementById('gateOverlay').classList.add('hidden');
+  goTo('entry');
+}
+
+// ============================================================
+// DAILY ENTRY FORM (§3.2)
+// ============================================================
+async function saveEntry(){
+  const btn = document.getElementById('saveEntryBtn');
+  if(!selectedMachine){
+    showAppMsg('error', 'Select a machine first.');
+    return;
+  }
+  const status = document.getElementById('entryStatus').value;
+  const opening = parseFloat(document.getElementById('entryOpening').value);
+  let closing = parseFloat(document.getElementById('entryClosing').value);
+  const remarks = document.getElementById('entryRemarks').value.trim();
+
+  if(isNaN(closing)){
+    showAppMsg('error', 'Enter a closing reading.');
+    return;
+  }
+  if(status !== 'Running') closing = opening; // per §3.2
+
+  const totalHrs = status === 'Running' ? Math.max(0, closing - opening) : 0;
+  const needsReview = closing < opening;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving...';
+
+  const { error } = await supa.from('daily_log').upsert({
+    date: todayIST(),
+    machine_id: selectedMachine.id,
+    status: status,
+    opening: opening,
+    closing: closing,
+    total_hrs: totalHrs,
+    needs_review: needsReview,
+    remarks: remarks || null,
+    created_by: currentUser.id
+  }, { onConflict: 'date,machine_id' });
+
+  btn.disabled = false;
+  btn.textContent = 'Save Entry';
+
+  if(error){
+    showAppMsg('error', error.message);
+    return;
+  }
+
+  showAppMsg(needsReview ? 'warn' : 'ok',
+    needsReview
+      ? 'Saved — flagged for GM review (closing was below the last reading).'
+      : 'Entry saved.');
+
+  document.getElementById('entryClosing').value = '';
+  document.getElementById('entryRemarks').value = '';
+  document.getElementById('conflictWarning').classList.add('hidden');
+  await loadMachines();
+  await loadTodayEntries();
+}
+
+async function loadTodayEntries(){
+  const { data, error } = await supa
+    .from('daily_log')
+    .select('machine_id, total_hrs, status, needs_review')
+    .eq('date', todayIST())
+    .order('machine_id');
+
+  const table = document.getElementById('todayTable');
+  const emptyMsg = document.getElementById('todayEmpty');
+  table.innerHTML = '<tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>';
+
+  if(error){ showAppMsg('error', 'Could not load today\'s entries: ' + error.message); return; }
+
+  if(!data || data.length === 0){
+    emptyMsg.style.display = 'block';
+    return;
+  }
+  emptyMsg.style.display = 'none';
+
+  data.forEach(row => {
+    const tr = document.createElement('tr');
+    const pillClass = row.status === 'Running' ? 'green'
+      : row.status === 'Idle' ? 'gray'
+      : 'amber';
+    tr.innerHTML = `
+      <td>${escapeHtml(row.machine_id)}${row.needs_review ? ' <span class="pill red" style="margin-left:4px;">Review</span>' : ''}</td>
+      <td class="num tabular">${Number(row.total_hrs).toFixed(1)}</td>
+      <td><span class="pill ${pillClass}">${escapeHtml(row.status)}</span></td>`;
+    table.appendChild(tr);
+  });
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function showAppMsg(type, text){
+  const el = document.getElementById('appMsg');
+  el.innerHTML = '<div class="msg ' + type + '">' + escapeHtml(text) + '</div>';
+  if(type === 'ok') setTimeout(() => { el.innerHTML = ''; }, 3500);
+}
+
+// ============================================================
+// TAB NAVIGATION
+// ============================================================
+function goTo(name){
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.tab-btn[data-tab="' + name + '"]').classList.add('active');
+  window.scrollTo(0, 0);
+  if(name === 'machines'){
+    renderMachinesScreen();
+  }
+}
+
+// ============================================================
+// MACHINE MASTER SCREEN — list + Review Queue (GM/CEO only).
+// Deliberately no meter-replacement/lifetime-hours tooling —
+// owner decision: that complexity isn't worth it for an event
+// that happens once or twice a year company-wide. If a meter
+// genuinely gets replaced, that's a manual one-off fix, not a
+// permanent feature operators and GM have to understand daily.
+// ============================================================
+let reviewRows = [];
+
+async function renderMachinesScreen(){
+  const canWrite = (currentRole === 'gm' || currentRole === 'ceo');
+
+  // --- Review Queue ---
+  const { data: flagged, error: reviewErr } = await supa
+    .from('daily_log')
+    .select('id, date, machine_id, opening, closing, remarks')
+    .eq('needs_review', true)
+    .order('date', { ascending: false });
+
+  const reviewSection = document.getElementById('reviewQueueSection');
+  if(reviewErr){
+    reviewSection.innerHTML = '<div class="msg error">Could not load review queue: ' + escapeHtml(reviewErr.message) + '</div>';
+  } else if(!canWrite){
+    reviewSection.innerHTML = ''; // Operator/Team don't see this section at all
+  } else {
+    reviewRows = flagged || [];
+    if(reviewRows.length === 0){
+      reviewSection.innerHTML = '';
+    } else {
+      let html = '<h2 class="section-title">Review Queue <span class="flag-tag">GM/CEO</span></h2>';
+      reviewRows.forEach(r => {
+        html += `
+          <div class="card">
+            <div class="card-title" style="font-weight:700; font-size:13px;">${escapeHtml(r.machine_id)} — ${escapeHtml(r.date)}</div>
+            <div style="font-size:11.5px; color:var(--text-dim); margin:4px 0 8px;">Opening ${r.opening}, Closing ${r.closing}</div>
+            <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:10px;">${escapeHtml(r.remarks || '')}</div>
+            <button class="btn btn-secondary" onclick="markReviewed(${r.id})">Mark Reviewed</button>
+          </div>`;
+      });
+      reviewSection.innerHTML = html;
+    }
+  }
+
+  // --- Machine list ---
+  const container = document.getElementById('machinesListContainer');
+  container.innerHTML = '<h2 class="section-title">Machine Master</h2>';
+  machines.forEach(m => {
+    const hrs = machineHours[m.id] || { meter_hrs: 0 };
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div class="machine-name">${escapeHtml(m.id)}</div>
+          <div class="machine-cat">${escapeHtml(m.category)} · ${escapeHtml(m.name)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="mini-label">Meter Hrs</div>
+          <div class="mini-value tabular">${Number(hrs.meter_hrs).toFixed(1)}</div>
+        </div>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+}
+
+async function markReviewed(logId){
+  const { error } = await supa.from('daily_log').update({ needs_review: false }).eq('id', logId);
+  if(error){ showAppMsg('error', error.message); return; }
+  await renderMachinesScreen();
+}
+
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ============================================================
+// UPLOAD EXCEL (§3.6) — GM/CEO only.
+// Daily Log is the only sheet with a conflict-resolution step, because
+// it's the only one with a UNIQUE(date, machine_id) constraint — Diesel
+// Purchase and Diesel Issue can legitimately have multiple rows for the
+// same day/machine (fuel given out more than once a day), so those are
+// simply validated and inserted, no conflict concept applies to them.
+// ============================================================
+
+const DIRECT_TANK_CATEGORIES = new Set(['Excavators','Tippers','Epirocs','Air Compressors','DG Sets','LMV']);
+const VALID_STATUSES = new Set(['Running','Idle','Breakdown','Under Service']);
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+let uploadState = null;
+
+function freshUploadState(){
+  return {
+    dailyLogValid: [],       // {date, machine_id, staff, status, opening, closing, total_hrs, remarks}
+    dieselPurchaseValid: [], // {date, quantity, storage_location, barrel_count, supplier, bill_no, remarks}
+    dieselIssueValid: [],    // {date, machine_id, quantity, issued_by, remarks}
+    errors: [],              // strings, shown to the user
+    conflicts: [],           // {date, machine_id, appRow, fileRow, resolution: null|'app'|'file'|'both'}
+    cleanDailyLogRows: [],   // daily_log rows with no existing match — inserted immediately on parse
+    counts: { dailyLogInserted: 0, dieselPurchaseInserted: 0, dieselIssueInserted: 0, conflictsResolved: 0 }
+  };
+}
+
+function openUploadModal(){
+  resetUploadModal();
+  document.getElementById('uploadModal').classList.remove('hidden');
+}
+function closeUploadModal(){
+  document.getElementById('uploadModal').classList.add('hidden');
+}
+function resetUploadModal(){
+  uploadState = freshUploadState();
+  document.getElementById('uploadFileInput').value = '';
+  document.getElementById('uploadParseMsg').innerHTML = '';
+  document.getElementById('uploadStep1').classList.remove('hidden');
+  document.getElementById('uploadStep2').classList.add('hidden');
+  document.getElementById('uploadStep3').classList.add('hidden');
+  document.getElementById('uploadConflictsSection').classList.add('hidden');
+}
+
+function isRowBlank(row){
+  return Object.values(row).every(v => v === undefined || v === null || String(v).trim() === '');
+}
+
+async function handleParseFile(){
+  const fileInput = document.getElementById('uploadFileInput');
+  const msgEl = document.getElementById('uploadParseMsg');
+  const file = fileInput.files[0];
+  if(!file){
+    msgEl.innerHTML = '<div class="msg error">Choose a file first.</div>';
+    return;
+  }
+  const parseBtn = document.getElementById('parseFileBtn');
+  parseBtn.disabled = true;
+  parseBtn.innerHTML = '<span class="spinner"></span> Parsing...';
+  msgEl.innerHTML = '';
+
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    uploadState = freshUploadState();
+
+    const machineIds = new Set(machines.map(m => m.id));
+    const diesetIds = new Set(machines.filter(m => DIRECT_TANK_CATEGORIES.has(m.category)).map(m => m.id));
+
+    parseDailyLogSheet(wb, machineIds);
+    parseDieselPurchaseSheet(wb);
+    parseDieselIssueSheet(wb, diesetIds);
+
+    // Insert diesel rows right away — no conflict concept for these tables.
+    if(uploadState.dieselPurchaseValid.length){
+      const { error } = await supa.from('diesel_purchase').insert(
+        uploadState.dieselPurchaseValid.map(r => ({ ...r, created_by: currentUser.id }))
+      );
+      if(error){ uploadState.errors.push('Diesel Purchase insert failed: ' + error.message); }
+      else { uploadState.counts.dieselPurchaseInserted = uploadState.dieselPurchaseValid.length; }
+    }
+    if(uploadState.dieselIssueValid.length){
+      const { error } = await supa.from('diesel_issue').insert(
+        uploadState.dieselIssueValid.map(r => ({ ...r, created_by: currentUser.id }))
+      );
+      if(error){ uploadState.errors.push('Diesel Issue insert failed: ' + error.message); }
+      else { uploadState.counts.dieselIssueInserted = uploadState.dieselIssueValid.length; }
+    }
+
+    // Daily Log: split into clean (insert now) vs conflicting (need resolution) vs unchanged (skip).
+    await checkDailyLogConflicts();
+    if(uploadState.cleanDailyLogRows.length){
+      const { error } = await supa.from('daily_log').insert(
+        uploadState.cleanDailyLogRows.map(r => ({ ...r, created_by: currentUser.id }))
+      );
+      if(error){ uploadState.errors.push('Daily Log insert failed: ' + error.message); }
+      else { uploadState.counts.dailyLogInserted = uploadState.cleanDailyLogRows.length; }
+    }
+
+    renderUploadStep2();
+  } catch(e){
+    msgEl.innerHTML = '<div class="msg error">Could not read this file — ' + escapeHtml(e.message || String(e)) + '</div>';
+  } finally {
+    parseBtn.disabled = false;
+    parseBtn.textContent = 'Parse & Validate';
+  }
+}
+
+function sheetRows(wb, sheetName){
+  const ws = wb.Sheets[sheetName];
+  if(!ws) return [];
+  return XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
+}
+
+function parseDailyLogSheet(wb, machineIds){
+  const rows = sheetRows(wb, 'Daily Log');
+  const seenKeys = new Set();
+  rows.forEach((row, i) => {
+    const rowNum = i + 2; // header is row 1
+    if(isRowBlank(row)) return;
+    const date = String(row['Date'] || '').trim();
+    const machine_id = String(row['Machine ID'] || '').trim();
+    const staff = String(row['Staff'] || '').trim();
+    const status = String(row['Status'] || '').trim();
+    const openingRaw = row['Opening Hrs'];
+    const closingRaw = row['Closing Hrs'];
+    const totalRaw = row['Total Hrs'];
+    const remarks = String(row['Remarks'] || '').trim();
+
+    if(!DATE_RE.test(date)){
+      uploadState.errors.push(`Daily Log row ${rowNum}: invalid or missing date ("${date}").`); return;
+    }
+    if(!machine_id || !machineIds.has(machine_id)){
+      uploadState.errors.push(`Daily Log row ${rowNum}: "${machine_id}" is not a known Machine ID.`); return;
+    }
+    if(!VALID_STATUSES.has(status)){
+      uploadState.errors.push(`Daily Log row ${rowNum}: Status must be Running, Idle, Breakdown, or Under Service (got "${status}").`); return;
+    }
+    const opening = parseFloat(openingRaw);
+    const closing = parseFloat(closingRaw);
+    if(isNaN(opening) || opening < 0){
+      uploadState.errors.push(`Daily Log row ${rowNum}: Opening Hrs must be a number >= 0.`); return;
+    }
+    if(isNaN(closing) || closing < 0){
+      uploadState.errors.push(`Daily Log row ${rowNum}: Closing Hrs must be a number >= 0.`); return;
+    }
+    if(closing < opening){
+      uploadState.errors.push(`Daily Log row ${rowNum} (${machine_id}, ${date}): Closing (${closing}) is below Opening (${opening}). If this is a genuine meter reset, enter it manually in the app instead — the upload doesn't set that flag.`);
+      return;
+    }
+    const key = date + '|' + machine_id;
+    if(seenKeys.has(key)){
+      uploadState.errors.push(`Daily Log row ${rowNum}: duplicate Date + Machine ID within this file (${machine_id}, ${date}).`); return;
+    }
+    seenKeys.add(key);
+
+    const total_hrs = (totalRaw === '' || totalRaw === undefined) ? Math.round((closing - opening) * 100) / 100 : parseFloat(totalRaw);
+
+    uploadState.dailyLogValid.push({ date, machine_id, staff: staff || null, status, opening, closing, total_hrs, remarks: remarks || null });
+  });
+}
+
+function parseDieselPurchaseSheet(wb){
+  const rows = sheetRows(wb, 'Diesel Purchase');
+  rows.forEach((row, i) => {
+    const rowNum = i + 2;
+    if(isRowBlank(row)) return;
+    const date = String(row['Date'] || '').trim();
+    const quantity = parseFloat(row['Quantity (L)']);
+    const storage_location = String(row['Storage Location'] || '').trim();
+    const barrelRaw = row['Barrel Count'];
+    const supplier = String(row['Supplier'] || '').trim();
+    const bill_no = String(row['Bill No'] || '').trim();
+    const remarks = String(row['Remarks'] || '').trim();
+
+    if(!DATE_RE.test(date)){
+      uploadState.errors.push(`Diesel Purchase row ${rowNum}: invalid or missing date ("${date}").`); return;
+    }
+    if(isNaN(quantity) || quantity <= 0){
+      uploadState.errors.push(`Diesel Purchase row ${rowNum}: Quantity (L) must be a number > 0.`); return;
+    }
+    const barrel_count = (barrelRaw === '' || barrelRaw === undefined) ? null : parseInt(barrelRaw, 10);
+
+    uploadState.dieselPurchaseValid.push({
+      date, quantity, storage_location: storage_location || null, barrel_count,
+      supplier: supplier || null, bill_no: bill_no || null, remarks: remarks || null
+    });
+  });
+}
+
+function parseDieselIssueSheet(wb, diesetIds){
+  const rows = sheetRows(wb, 'Diesel Issue');
+  rows.forEach((row, i) => {
+    const rowNum = i + 2;
+    if(isRowBlank(row)) return;
+    const date = String(row['Date'] || '').trim();
+    const machine_id = String(row['Machine ID'] || '').trim();
+    const quantity = parseFloat(row['Quantity Issued (L)']);
+    const issued_by = String(row['Issued By'] || '').trim();
+    const remarks = String(row['Remarks'] || '').trim();
+
+    if(!DATE_RE.test(date)){
+      uploadState.errors.push(`Diesel Issue row ${rowNum}: invalid or missing date ("${date}").`); return;
+    }
+    if(!machine_id || !diesetIds.has(machine_id)){
+      uploadState.errors.push(`Diesel Issue row ${rowNum}: "${machine_id}" doesn't have its own diesel tank (or isn't a known Machine ID) — Wiresaw Drilling/Machines run off DG Sets/Compressors and can't be issued fuel directly.`); return;
+    }
+    if(isNaN(quantity) || quantity <= 0){
+      uploadState.errors.push(`Diesel Issue row ${rowNum}: Quantity Issued (L) must be a number > 0.`); return;
+    }
+
+    uploadState.dieselIssueValid.push({ date, machine_id, quantity, issued_by: issued_by || null, remarks: remarks || null });
+  });
+}
+
+async function checkDailyLogConflicts(){
+  const rows = uploadState.dailyLogValid;
+  if(!rows.length) return;
+
+  // Fetch every existing daily_log row that could possibly collide, by date range.
+  const dates = rows.map(r => r.date).sort();
+  const { data: existing, error } = await supa
+    .from('daily_log')
+    .select('id, date, machine_id, opening, closing, status, staff, remarks')
+    .gte('date', dates[0])
+    .lte('date', dates[dates.length - 1]);
+
+  if(error){
+    uploadState.errors.push('Could not check for conflicts against existing data: ' + error.message);
+    return;
+  }
+
+  const existingMap = new Map();
+  (existing || []).forEach(r => existingMap.set(r.date + '|' + r.machine_id, r));
+
+  rows.forEach(fileRow => {
+    const key = fileRow.date + '|' + fileRow.machine_id;
+    const appRow = existingMap.get(key);
+    if(!appRow){
+      uploadState.cleanDailyLogRows.push(fileRow);
+      return;
+    }
+    const sameValues = Number(appRow.opening) === Number(fileRow.opening) && Number(appRow.closing) === Number(fileRow.closing);
+    if(sameValues){
+      // Already up to date — nothing to do, not an error, not a conflict.
+      return;
+    }
+    uploadState.conflicts.push({ date: fileRow.date, machine_id: fileRow.machine_id, appRow, fileRow, resolution: null });
+  });
+}
+
+function canResolveConflicts(){
+  return currentRole === 'gm' || currentRole === 'ceo';
+}
+
+function renderUploadStep2(){
+  document.getElementById('uploadStep1').classList.add('hidden');
+  document.getElementById('uploadStep2').classList.remove('hidden');
+
+  const s = uploadState;
+  const summaryEl = document.getElementById('uploadSummaryBox');
+  summaryEl.innerHTML =
+    `<b>${s.counts.dailyLogInserted}</b> Daily Log rows imported so far, ` +
+    `<b>${s.counts.dieselPurchaseInserted}</b> Diesel Purchase rows imported, ` +
+    `<b>${s.counts.dieselIssueInserted}</b> Diesel Issue rows imported.<br>` +
+    `<b>${s.conflicts.length}</b> conflict${s.conflicts.length===1?'':'s'} need resolving below. ` +
+    `<b>${s.errors.length}</b> row${s.errors.length===1?'':'s'} had errors and were skipped.`;
+
+  const errBox = document.getElementById('uploadErrorsBox');
+  if(s.errors.length){
+    errBox.innerHTML = '<h2 class="section-title">Errors — skipped, not imported</h2>' +
+      '<div class="card" style="max-height:160px; overflow-y:auto;"><ul style="margin:0; padding-left:18px; font-size:12px;">' +
+      s.errors.map(e => '<li style="margin-bottom:6px;">' + escapeHtml(e) + '</li>').join('') +
+      '</ul></div>';
+  } else {
+    errBox.innerHTML = '';
+  }
+
+  const commitBtn = document.getElementById('commitUploadBtn');
+  commitBtn.classList.remove('hidden');
+
+  if(s.conflicts.length){
+    document.getElementById('uploadConflictsSection').classList.remove('hidden');
+    if(canResolveConflicts()){
+      renderConflictsList();
+      commitBtn.textContent = 'Commit Upload';
+    } else {
+      // Operator: read-only view, no resolve buttons, no client-side UPDATE
+      // attempt — Operator's UPDATE rights on daily_log only cover the last
+      // 2 days (RLS), so an older conflict would silently fail if attempted
+      // here. Safer to change nothing and hand off to a GM/CEO instead.
+      renderConflictsReadOnly();
+      commitBtn.textContent = 'Close';
+    }
+  } else {
+    document.getElementById('uploadConflictsSection').classList.add('hidden');
+    commitBtn.textContent = canResolveConflicts() ? 'Commit Upload' : 'Finish';
+  }
+}
+
+function renderConflictsReadOnly(){
+  const el = document.getElementById('uploadConflictsList');
+  el.innerHTML =
+    '<div class="msg warn" style="margin-bottom:10px;">' +
+    'These need a GM or CEO to resolve — nothing has been changed for these rows. ' +
+    'Hand this same file to a GM/CEO and have them open Upload Excel to finish resolving them.' +
+    '</div>' +
+    uploadState.conflicts.map(c => `
+      <div class="card" style="padding:11px;">
+        <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(c.machine_id)} — ${escapeHtml(c.date)}</div>
+        <div style="font-size:11.5px; color:var(--text-dim);">
+          App has: Opening ${c.appRow.opening}, Closing ${c.appRow.closing}<br>
+          File has: Opening ${c.fileRow.opening}, Closing ${c.fileRow.closing}
+        </div>
+      </div>`).join('');
+}
+
+function renderConflictsList(){
+  const el = document.getElementById('uploadConflictsList');
+  el.innerHTML = uploadState.conflicts.map((c, idx) => {
+    const chosen = c.resolution;
+    const chipClass = (val) => 'chip' + (chosen === val ? ' selected-green' : '');
+    return `
+      <div class="card" style="padding:11px;">
+        <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(c.machine_id)} — ${escapeHtml(c.date)}</div>
+        <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:8px;">
+          App has: Opening ${c.appRow.opening}, Closing ${c.appRow.closing}<br>
+          File has: Opening ${c.fileRow.opening}, Closing ${c.fileRow.closing}
+        </div>
+        <div class="chip-row">
+          <button class="${chipClass('app')}" onclick="resolveConflict(${idx}, 'app')">Keep App</button>
+          <button class="${chipClass('file')}" onclick="resolveConflict(${idx}, 'file')">Keep File</button>
+          <button class="${chipClass('both')}" onclick="resolveConflict(${idx}, 'both')">Keep Both</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function resolveConflict(idx, choice){
+  uploadState.conflicts[idx].resolution = choice;
+  renderConflictsList();
+}
+function resolveAllConflicts(choice){
+  uploadState.conflicts.forEach(c => c.resolution = choice);
+  renderConflictsList();
+}
+
+function handleCommitOrFinish(){
+  if(uploadState.conflicts.length && !canResolveConflicts()){
+    // Operator with unresolved conflicts they can't act on — no UPDATE
+    // attempted, nothing changed, just show what happened so far.
+    uploadState.counts.conflictsResolved = 0;
+    showUploadResults();
+    return;
+  }
+  handleCommitUpload();
+}
+
+async function handleCommitUpload(){
+  const unresolved = uploadState.conflicts.filter(c => !c.resolution).length;
+  if(unresolved > 0){
+    if(!confirm(unresolved + ' conflict(s) still unresolved — those rows will be left untouched (Keep App). Continue?')){
+      return;
+    }
+  }
+
+  const btn = document.getElementById('commitUploadBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Committing...';
+
+  let resolved = 0;
+  for(const c of uploadState.conflicts){
+    const choice = c.resolution || 'app';
+    if(choice === 'app'){
+      // Do nothing — app's existing value wins, file's row is discarded.
+    } else if(choice === 'file'){
+      const { error } = await supa.from('daily_log')
+        .update({ opening: c.fileRow.opening, closing: c.fileRow.closing, status: c.fileRow.status,
+                   staff: c.fileRow.staff, total_hrs: c.fileRow.total_hrs, remarks: c.fileRow.remarks,
+                   needs_review: false })
+        .eq('id', c.appRow.id);
+      if(error){ uploadState.errors.push(`Conflict ${c.machine_id}/${c.date}: could not apply "Keep File" — ${error.message}`); continue; }
+    } else if(choice === 'both'){
+      // The table has a UNIQUE(date, machine_id) constraint, so two literal
+      // rows can't coexist. "Keep Both" preserves the file's numbers in
+      // Remarks (nothing is silently lost) and flags the row for a human
+      // to reconcile properly, rather than guessing which value is right.
+      const note = `[Upload conflict ${todayIST()}] File had Opening ${c.fileRow.opening}, Closing ${c.fileRow.closing} — app kept Opening ${c.appRow.opening}, Closing ${c.appRow.closing}. ${c.appRow.remarks || ''}`.trim();
+      const { error } = await supa.from('daily_log')
+        .update({ needs_review: true, remarks: note })
+        .eq('id', c.appRow.id);
+      if(error){ uploadState.errors.push(`Conflict ${c.machine_id}/${c.date}: could not apply "Keep Both" — ${error.message}`); continue; }
+    }
+    resolved++;
+  }
+  uploadState.counts.conflictsResolved = resolved;
+
+  await loadMachines();
+  await loadTodayEntries();
+
+  showUploadResults();
+  btn.disabled = false;
+  btn.textContent = 'Commit Upload';
+}
+
+function showUploadResults(){
+  document.getElementById('uploadStep2').classList.add('hidden');
+  document.getElementById('uploadStep3').classList.remove('hidden');
+  const s = uploadState;
+  const totalImported = s.counts.dailyLogInserted + s.counts.dieselPurchaseInserted + s.counts.dieselIssueInserted;
+  const pending = s.conflicts.length - s.counts.conflictsResolved;
+  document.getElementById('uploadResultsBox').innerHTML =
+    `<div class="msg ok">
+      <b>${totalImported}</b> rows imported, <b>${s.counts.conflictsResolved}</b> conflict(s) resolved, <b>${s.errors.length}</b> error(s).
+    </div>` +
+    (pending > 0 ? `<div class="msg warn"><b>${pending}</b> conflict(s) still need a GM/CEO to resolve — nothing was changed for those rows. Hand this file to a GM/CEO to finish.</div>` : '') +
+    (s.errors.length ? '<div class="card" style="max-height:160px; overflow-y:auto; margin-top:8px;"><ul style="margin:0; padding-left:18px; font-size:12px;">' +
+      s.errors.map(e => '<li style="margin-bottom:6px;">' + escapeHtml(e) + '</li>').join('') + '</ul></div>' : '');
+}
+</script>
+</body>
+</html>
