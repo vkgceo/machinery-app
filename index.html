@@ -167,16 +167,11 @@
     <h2 class="section-title">Daily Entry</h2>
     <div class="card">
       <div class="field">
-        <label>Date</label>
-        <input type="date" id="entryDateInput" onchange="onEntryContextChange()">
-      </div>
-      <div class="field">
         <label>Machine</label>
         <select id="entryMachine" onchange="onMachineChange()">
           <option value="">Select a machine...</option>
         </select>
       </div>
-      <div id="entryEditNotice" class="msg warn hidden"></div>
       <div class="field">
         <label>Status</label>
         <select id="entryStatus" onchange="onStatusChange()">
@@ -203,7 +198,7 @@
       <button class="btn btn-primary" id="saveEntryBtn" onclick="saveEntry()">Save Entry</button>
     </div>
 
-    <h2 class="section-title" id="entriesListTitle">Today's Entries</h2>
+    <h2 class="section-title">Today's Entries</h2>
     <div class="card" style="padding:6px 10px;">
       <table id="todayTable">
         <tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>
@@ -284,7 +279,7 @@
         <div id="uploadConflictsList"></div>
       </div>
 
-      <button class="btn btn-primary" id="commitUploadBtn" onclick="handleCommitOrFinish()" style="margin-top:14px;">Commit Upload</button>
+      <button class="btn btn-primary" id="commitUploadBtn" onclick="handleCommitUpload()" style="margin-top:14px;">Commit Upload</button>
       <button class="btn btn-secondary" onclick="resetUploadModal()" style="margin-top:8px;">Start Over</button>
     </div>
 
@@ -302,12 +297,13 @@
 // ============================================================
 // CONFIG
 // ============================================================
+// Standalone project — VKG Machinery (split from the shared Quarry Ops project)
 const SUPABASE_URL = 'https://dzqycclkqbrwjoqzfexg.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_TBBH0raBXrUBl_yZHEqP1g_-R_HNjCU';
 
 const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-// No schema override — the new standalone project uses the client's
-// default "public" schema, since Machinery is the only app in it.
+// No db.schema override — the standalone project keeps everything in the
+// default "public" schema, so the client's default schema is correct.
 
 // ============================================================
 // STATE
@@ -427,20 +423,16 @@ async function afterLogin(){
   document.getElementById('noRoleScreen').classList.add('hidden');
   document.getElementById('appScreen').classList.remove('hidden');
   document.getElementById('roleBadge').textContent = currentRole.toUpperCase();
-  // Excel Template download + Upload are available to Operator/GM/CEO —
-  // owner decision (2026-08-30): Operator does bulk/daily data entry via
-  // Excel too, not just GM/CEO. Conflict RESOLUTION stays GM/CEO-only
-  // (see canResolveConflicts in the upload logic below) because Operator's
-  // UPDATE rights on daily_log are restricted to the last 2 days (RLS),
-  // so Operator resolving an older conflict would silently fail server-side.
-  if(currentRole === 'operator' || currentRole === 'gm' || currentRole === 'ceo'){
+  // Excel upload/template is a GM/CEO permission (§2 role table) — Operator
+  // and Team never see these controls, matching the RLS write restrictions
+  // the upload path relies on.
+  if(currentRole === 'gm' || currentRole === 'ceo'){
     document.getElementById('headerExcelActions').classList.remove('hidden');
   } else {
     document.getElementById('headerExcelActions').classList.add('hidden');
   }
   document.getElementById('todayLabel').textContent =
     new Date().toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
-  document.getElementById('entryDateInput').value = todayIST();
   dlog('Step 2c: app screen should now be visible. Loading machines...');
 
   await loadMachines();
@@ -498,92 +490,17 @@ async function loadMachines(){
   });
 }
 
-let editingEntryId = null;
-
-// Mirrors the RLS UPDATE window for Operator on daily_log
-// (schema.sql: date >= today - 2 days). Kept in sync manually since this
-// is UI-side guidance only — the database is the real enforcement point.
-function operatorEditFloor(){
-  const today = todayIST();
-  const d = new Date(today + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() - 2);
-  return d.toISOString().slice(0, 10);
-}
-
 function onMachineChange(){
-  refreshEntryFormForSelection();
-}
-function onEntryContextChange(){
-  refreshEntryFormForSelection();
-  loadTodayEntries(); // date changed — the list below must reflect the newly selected date too
-}
-
-// ============================================================
-// EDIT ENTRY — checks whether an entry already exists for the
-// selected Machine + Date. If so, loads its REAL saved values so a
-// correction is accurate (rather than guessing Opening from the
-// machine's current live reading, which would be wrong if today's
-// entry was already saved once with a mistake). If not, falls back
-// to the original new-entry auto-fill behaviour.
-// ============================================================
-async function refreshEntryFormForSelection(){
   const id = document.getElementById('entryMachine').value;
   selectedMachine = machines.find(m => m.id === id) || null;
-  const dateVal = document.getElementById('entryDateInput').value || todayIST();
-
   document.getElementById('entryClosing').value = '';
   document.getElementById('conflictWarning').classList.add('hidden');
-  document.getElementById('entryEditNotice').classList.add('hidden');
-  document.getElementById('saveEntryBtn').disabled = false;
-  editingEntryId = null;
-
   if(!selectedMachine){
     document.getElementById('entryOpening').value = '';
     return;
   }
-
-  const { data: existing, error } = await supa
-    .from('daily_log')
-    .select('id, status, opening, closing, remarks, needs_review')
-    .eq('machine_id', selectedMachine.id)
-    .eq('date', dateVal)
-    .maybeSingle();
-
-  if(error){
-    showAppMsg('error', 'Could not check for an existing entry: ' + error.message);
-    return;
-  }
-
-  const noticeEl = document.getElementById('entryEditNotice');
-
-  if(existing){
-    // EDIT MODE — load the row's own stored values.
-    editingEntryId = existing.id;
-    document.getElementById('entryStatus').value = existing.status;
-    document.getElementById('entryOpening').value = Number(existing.opening).toFixed(1);
-    document.getElementById('entryClosing').value = Number(existing.closing).toFixed(1);
-    document.getElementById('entryRemarks').value = existing.remarks || '';
-    onClosingInput();
-
-    const blocked = (currentRole === 'operator' && dateVal < operatorEditFloor());
-    if(blocked){
-      noticeEl.textContent = 'This entry is older than 2 days — only a GM or CEO can edit it. Ask them to make this correction.';
-      noticeEl.classList.remove('hidden');
-      document.getElementById('saveEntryBtn').disabled = true;
-    } else {
-      noticeEl.textContent = 'Editing an existing entry for ' + dateVal + ' — Save will overwrite it.';
-      noticeEl.classList.remove('hidden');
-    }
-  } else {
-    // NEW ENTRY MODE — same auto-fill as before: Opening comes from the
-    // machine's current latest known reading. For a brand-new backdated
-    // entry (not today), this is the LATEST reading, not necessarily what
-    // it was as of the selected date — worth double-checking in that case.
-    const hrs = machineHours[selectedMachine.id] || { meter_hrs: 0 };
-    document.getElementById('entryOpening').value = Number(hrs.meter_hrs).toFixed(1);
-    document.getElementById('entryStatus').value = 'Running';
-    document.getElementById('entryRemarks').value = '';
-  }
+  const hrs = machineHours[id] || { meter_hrs: 0 };
+  document.getElementById('entryOpening').value = Number(hrs.meter_hrs).toFixed(1);
 }
 
 function onStatusChange(){
@@ -686,15 +603,6 @@ async function saveEntry(){
     showAppMsg('error', 'Select a machine first.');
     return;
   }
-  const dateVal = document.getElementById('entryDateInput').value || todayIST();
-  // Defensive guard, independent of the Save button's disabled DOM state:
-  // Operator's UPDATE rights on daily_log are restricted to the last 2
-  // days (RLS) — an edit of an older existing row would fail server-side
-  // anyway, so catch it here with a clear message instead.
-  if(currentRole === 'operator' && editingEntryId && dateVal < operatorEditFloor()){
-    showAppMsg('error', 'This entry is older than 2 days — only a GM or CEO can edit it.');
-    return;
-  }
   const status = document.getElementById('entryStatus').value;
   const opening = parseFloat(document.getElementById('entryOpening').value);
   let closing = parseFloat(document.getElementById('entryClosing').value);
@@ -713,7 +621,7 @@ async function saveEntry(){
   btn.innerHTML = '<span class="spinner"></span> Saving...';
 
   const { error } = await supa.from('daily_log').upsert({
-    date: dateVal,
+    date: todayIST(),
     machine_id: selectedMachine.id,
     status: status,
     opening: opening,
@@ -737,30 +645,27 @@ async function saveEntry(){
       ? 'Saved — flagged for GM review (closing was below the last reading).'
       : 'Entry saved.');
 
+  document.getElementById('entryClosing').value = '';
+  document.getElementById('entryRemarks').value = '';
+  document.getElementById('conflictWarning').classList.add('hidden');
   await loadMachines();
   await loadTodayEntries();
-  await refreshEntryFormForSelection(); // reload the just-saved row's real values, confirming the fix
 }
 
 async function loadTodayEntries(){
-  const dateVal = document.getElementById('entryDateInput').value || todayIST();
   const { data, error } = await supa
     .from('daily_log')
     .select('machine_id, total_hrs, status, needs_review')
-    .eq('date', dateVal)
+    .eq('date', todayIST())
     .order('machine_id');
-
-  const titleEl = document.getElementById('entriesListTitle');
-  titleEl.textContent = (dateVal === todayIST()) ? "Today's Entries" : 'Entries — ' + dateVal;
 
   const table = document.getElementById('todayTable');
   const emptyMsg = document.getElementById('todayEmpty');
   table.innerHTML = '<tr><th>Machine</th><th class="num">Hrs</th><th>Status</th></tr>';
 
-  if(error){ showAppMsg('error', 'Could not load entries: ' + error.message); return; }
+  if(error){ showAppMsg('error', 'Could not load today\'s entries: ' + error.message); return; }
 
   if(!data || data.length === 0){
-    emptyMsg.textContent = (dateVal === todayIST()) ? 'No entries yet today.' : 'No entries for this date.';
     emptyMsg.style.display = 'block';
     return;
   }
@@ -839,10 +744,7 @@ async function renderMachinesScreen(){
             <div class="card-title" style="font-weight:700; font-size:13px;">${escapeHtml(r.machine_id)} — ${escapeHtml(r.date)}</div>
             <div style="font-size:11.5px; color:var(--text-dim); margin:4px 0 8px;">Opening ${r.opening}, Closing ${r.closing}</div>
             <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:10px;">${escapeHtml(r.remarks || '')}</div>
-            <div class="btn-row">
-              <button class="btn btn-primary" style="flex:1;" onclick="editFlaggedEntry('${escapeHtml(r.date)}', '${escapeHtml(r.machine_id)}')">Edit This Entry</button>
-              <button class="btn btn-secondary" style="flex:1;" onclick="markReviewed(${r.id})">Mark Reviewed</button>
-            </div>
+            <button class="btn btn-secondary" onclick="markReviewed(${r.id})">Mark Reviewed</button>
           </div>`;
       });
       reviewSection.innerHTML = html;
@@ -876,17 +778,6 @@ async function markReviewed(logId){
   const { error } = await supa.from('daily_log').update({ needs_review: false }).eq('id', logId);
   if(error){ showAppMsg('error', error.message); return; }
   await renderMachinesScreen();
-}
-
-// Jumps to the Entry tab with the flagged row's Machine + Date preselected,
-// loading its real saved values via refreshEntryFormForSelection() so GM/CEO
-// can actually fix the numbers, not just dismiss the flag.
-function editFlaggedEntry(date, machineId){
-  goTo('entry');
-  document.getElementById('entryDateInput').value = date;
-  document.getElementById('entryMachine').value = machineId;
-  refreshEntryFormForSelection();
-  loadTodayEntries();
 }
 
 
@@ -1147,10 +1038,6 @@ async function checkDailyLogConflicts(){
   });
 }
 
-function canResolveConflicts(){
-  return currentRole === 'gm' || currentRole === 'ceo';
-}
-
 function renderUploadStep2(){
   document.getElementById('uploadStep1').classList.add('hidden');
   document.getElementById('uploadStep2').classList.remove('hidden');
@@ -1174,43 +1061,12 @@ function renderUploadStep2(){
     errBox.innerHTML = '';
   }
 
-  const commitBtn = document.getElementById('commitUploadBtn');
-  commitBtn.classList.remove('hidden');
-
   if(s.conflicts.length){
     document.getElementById('uploadConflictsSection').classList.remove('hidden');
-    if(canResolveConflicts()){
-      renderConflictsList();
-      commitBtn.textContent = 'Commit Upload';
-    } else {
-      // Operator: read-only view, no resolve buttons, no client-side UPDATE
-      // attempt — Operator's UPDATE rights on daily_log only cover the last
-      // 2 days (RLS), so an older conflict would silently fail if attempted
-      // here. Safer to change nothing and hand off to a GM/CEO instead.
-      renderConflictsReadOnly();
-      commitBtn.textContent = 'Close';
-    }
+    renderConflictsList();
   } else {
     document.getElementById('uploadConflictsSection').classList.add('hidden');
-    commitBtn.textContent = canResolveConflicts() ? 'Commit Upload' : 'Finish';
   }
-}
-
-function renderConflictsReadOnly(){
-  const el = document.getElementById('uploadConflictsList');
-  el.innerHTML =
-    '<div class="msg warn" style="margin-bottom:10px;">' +
-    'These need a GM or CEO to resolve — nothing has been changed for these rows. ' +
-    'Hand this same file to a GM/CEO and have them open Upload Excel to finish resolving them.' +
-    '</div>' +
-    uploadState.conflicts.map(c => `
-      <div class="card" style="padding:11px;">
-        <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(c.machine_id)} — ${escapeHtml(c.date)}</div>
-        <div style="font-size:11.5px; color:var(--text-dim);">
-          App has: Opening ${c.appRow.opening}, Closing ${c.appRow.closing}<br>
-          File has: Opening ${c.fileRow.opening}, Closing ${c.fileRow.closing}
-        </div>
-      </div>`).join('');
 }
 
 function renderConflictsList(){
@@ -1241,17 +1097,6 @@ function resolveConflict(idx, choice){
 function resolveAllConflicts(choice){
   uploadState.conflicts.forEach(c => c.resolution = choice);
   renderConflictsList();
-}
-
-function handleCommitOrFinish(){
-  if(uploadState.conflicts.length && !canResolveConflicts()){
-    // Operator with unresolved conflicts they can't act on — no UPDATE
-    // attempted, nothing changed, just show what happened so far.
-    uploadState.counts.conflictsResolved = 0;
-    showUploadResults();
-    return;
-  }
-  handleCommitUpload();
 }
 
 async function handleCommitUpload(){
@@ -1306,12 +1151,10 @@ function showUploadResults(){
   document.getElementById('uploadStep3').classList.remove('hidden');
   const s = uploadState;
   const totalImported = s.counts.dailyLogInserted + s.counts.dieselPurchaseInserted + s.counts.dieselIssueInserted;
-  const pending = s.conflicts.length - s.counts.conflictsResolved;
   document.getElementById('uploadResultsBox').innerHTML =
     `<div class="msg ok">
       <b>${totalImported}</b> rows imported, <b>${s.counts.conflictsResolved}</b> conflict(s) resolved, <b>${s.errors.length}</b> error(s).
     </div>` +
-    (pending > 0 ? `<div class="msg warn"><b>${pending}</b> conflict(s) still need a GM/CEO to resolve — nothing was changed for those rows. Hand this file to a GM/CEO to finish.</div>` : '') +
     (s.errors.length ? '<div class="card" style="max-height:160px; overflow-y:auto; margin-top:8px;"><ul style="margin:0; padding-left:18px; font-size:12px;">' +
       s.errors.map(e => '<li style="margin-bottom:6px;">' + escapeHtml(e) + '</li>').join('') + '</ul></div>' : '');
 }
