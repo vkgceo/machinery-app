@@ -152,9 +152,10 @@
     </div>
     <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
       <button class="signout" onclick="doSignOut()">Sign Out</button>
-      <div id="headerExcelActions" class="hidden" style="display:flex; gap:8px; flex:1;">
+      <div id="headerExcelActions" class="hidden" style="display:flex; gap:8px; flex:1; flex-wrap:wrap;">
         <a class="btn btn-secondary" href="VKG_Excel_Template.xlsx" download
            style="flex:1; text-decoration:none; padding:6px 10px; font-size:11px;">⬇ Template</a>
+        <button class="btn btn-secondary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="exportCurrentData()">⬇ Export Data</button>
         <button class="btn btn-primary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="openUploadModal()">⬆ Upload Excel</button>
       </div>
     </div>
@@ -423,10 +424,10 @@ async function afterLogin(){
   document.getElementById('noRoleScreen').classList.add('hidden');
   document.getElementById('appScreen').classList.remove('hidden');
   document.getElementById('roleBadge').textContent = currentRole.toUpperCase();
-  // Excel upload/template is a GM/CEO permission (§2 role table) — Operator
-  // and Team never see these controls, matching the RLS write restrictions
-  // the upload path relies on.
-  if(currentRole === 'gm' || currentRole === 'ceo'){
+  // Excel upload/template/export: operator, gm, and ceo all have full
+  // edit-history access on the day-to-day tables now (only delete is
+  // CEO-only), so all three get these controls. Team stays view-only.
+  if(currentRole === 'operator' || currentRole === 'gm' || currentRole === 'ceo'){
     document.getElementById('headerExcelActions').classList.remove('hidden');
   } else {
     document.getElementById('headerExcelActions').classList.add('hidden');
@@ -800,6 +801,147 @@ const DIRECT_TANK_CATEGORIES = new Set(['Excavators','Tippers','Epirocs','Air Co
 const VALID_STATUSES = new Set(['Running','Idle','Breakdown','Under Service']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Excel date entry is at the mercy of whatever regional date format Windows
+// is set to on the machine that typed it — someone typing 8/31/26 on a
+// day-first locale, or 31/8/26 on a month-first one, ends up with plain
+// text Excel couldn't convert to a real date, not an actual date value.
+// Rather than rejecting anything but one exact typed format, try the
+// common variants and normalize to YYYY-MM-DD ourselves. Returns null if
+// nothing reasonable can be made of it.
+function normalizeDateString(raw){
+  if(raw === undefined || raw === null) return null;
+  const s = String(raw).trim();
+  if(!s) return null;
+
+  // Already the canonical form (this is what a real Excel date cell,
+  // read with cellDates+dateNF, comes through as).
+  if(DATE_RE.test(s)) return s;
+
+  // Bare Excel serial date number (e.g. a General-formatted date cell).
+  if(/^\d{4,6}(\.\d+)?$/.test(s)){
+    const serial = parseFloat(s);
+    // Excel's epoch is 1899-12-30 (accounts for its leap-year bug).
+    const ms = Math.round((serial - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if(!isNaN(d.getTime()) && d.getFullYear() > 1990 && d.getFullYear() < 2100){
+      return d.toISOString().slice(0, 10);
+    }
+    return null;
+  }
+
+  // Separated forms: D/M/Y, M/D/Y, D-M-Y, etc., with 2- or 4-digit years.
+  const m = s.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})$/);
+  if(!m) return null;
+  let [, a, b, c] = m;
+
+  let year, month, day;
+  if(a.length === 4){
+    // Y-M-D already, just not exactly zero-padded (e.g. 2026-8-31).
+    year = a; month = b; day = c;
+  } else if(c.length === 4 || c.length === 2){
+    // D/M/Y or M/D/Y — day-first (India) is tried first since that's this
+    // app's primary locale; fall back to month-first if day-first is invalid.
+    year = c.length === 2 ? ('20' + c) : c;
+    const aNum = parseInt(a, 10), bNum = parseInt(b, 10);
+    if(aNum >= 1 && aNum <= 31 && bNum >= 1 && bNum <= 12){
+      day = a; month = b;               // D/M/Y
+    } else if(bNum >= 1 && bNum <= 31 && aNum >= 1 && aNum <= 12){
+      day = b; month = a;               // M/D/Y
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  const candidate = `${year}-${mm}-${dd}`;
+  const d = new Date(candidate + 'T00:00:00Z');
+  if(isNaN(d.getTime())) return null;
+  // Guard against JS's date rollover (e.g. Feb 30 silently becoming Mar 2).
+  if(d.getUTCFullYear() != year || d.getUTCMonth() + 1 != parseInt(mm,10) || d.getUTCDate() != parseInt(dd,10)) return null;
+  return candidate;
+}
+
+// ============================================================
+// EXPORT CURRENT DATA — a safety net independent of the Excel template.
+// If someone's local copy of the filled-in template is lost or corrupted,
+// this pulls everything currently in the app into a file with the exact
+// same column layout as the template, so work can continue from the next
+// date without reconstructing anything from memory — and the file can be
+// re-uploaded through Upload Excel later with no conversion needed.
+// Available to operator/gm/ceo, matching their shared edit access.
+// ============================================================
+
+// Supabase caps a single request at 1000 rows — page through everything
+// so this keeps working correctly as the tables grow past that.
+async function fetchAllRows(table, columns, orderCols){
+  const pageSize = 1000;
+  let all = [];
+  let from = 0;
+  while(true){
+    let q = supa.from(table).select(columns).range(from, from + pageSize - 1);
+    orderCols.forEach(([col, asc]) => { q = q.order(col, { ascending: asc }); });
+    const { data, error } = await q;
+    if(error) throw new Error(`${table}: ${error.message}`);
+    all = all.concat(data || []);
+    if(!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
+async function exportCurrentData(){
+  if(!['operator','gm','ceo'].includes(currentRole)){
+    showAppMsg('error', 'You do not have access to export data.');
+    return;
+  }
+  showAppMsg('ok', 'Preparing export...');
+  try {
+    const [dailyLog, dieselPurchase, dieselIssue] = await Promise.all([
+      fetchAllRows('daily_log', 'date, machine_id, staff, status, opening, closing, total_hrs, remarks', [['date', true], ['machine_id', true]]),
+      fetchAllRows('diesel_purchase', 'date, quantity, storage_location, barrel_count, supplier, bill_no, remarks', [['date', true]]),
+      fetchAllRows('diesel_issue', 'date, machine_id, quantity, issued_by, remarks', [['date', true], ['machine_id', true]])
+    ]);
+
+    const wb = XLSX.utils.book_new();
+
+    const dailyLogRows = dailyLog.map(r => ({
+      'Date': r.date, 'Machine ID': r.machine_id, 'Staff': r.staff || '', 'Status': r.status,
+      'Opening Hrs': r.opening, 'Closing Hrs': r.closing, 'Total Hrs': r.total_hrs, 'Remarks': r.remarks || ''
+    }));
+    const wsLog = XLSX.utils.json_to_sheet(dailyLogRows, {
+      header: ['Date','Machine ID','Staff','Status','Opening Hrs','Closing Hrs','Total Hrs','Remarks']
+    });
+    XLSX.utils.book_append_sheet(wb, wsLog, 'Daily Log');
+
+    const purchaseRows = dieselPurchase.map(r => ({
+      'Date': r.date, 'Quantity (L)': r.quantity, 'Storage Location': r.storage_location || '',
+      'Barrel Count': r.barrel_count ?? '', 'Supplier': r.supplier || '', 'Bill No': r.bill_no || '', 'Remarks': r.remarks || ''
+    }));
+    const wsPurchase = XLSX.utils.json_to_sheet(purchaseRows, {
+      header: ['Date','Quantity (L)','Storage Location','Barrel Count','Supplier','Bill No','Remarks']
+    });
+    XLSX.utils.book_append_sheet(wb, wsPurchase, 'Diesel Purchase');
+
+    const issueRows = dieselIssue.map(r => ({
+      'Date': r.date, 'Machine ID': r.machine_id, 'Quantity Issued (L)': r.quantity,
+      'Issued By': r.issued_by || '', 'Remarks': r.remarks || ''
+    }));
+    const wsIssue = XLSX.utils.json_to_sheet(issueRows, {
+      header: ['Date','Machine ID','Quantity Issued (L)','Issued By','Remarks']
+    });
+    XLSX.utils.book_append_sheet(wb, wsIssue, 'Diesel Issue');
+
+    const today = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `VKG_Machinery_Export_${today}.xlsx`);
+    showAppMsg('ok', `Exported ${dailyLog.length} Daily Log, ${dieselPurchase.length} Diesel Purchase, ${dieselIssue.length} Diesel Issue rows.`);
+  } catch(e){
+    showAppMsg('error', 'Export failed: ' + (e.message || String(e)));
+  }
+}
+
 let uploadState = null;
 
 function freshUploadState(){
@@ -907,7 +1049,8 @@ function parseDailyLogSheet(wb, machineIds){
   rows.forEach((row, i) => {
     const rowNum = i + 2; // header is row 1
     if(isRowBlank(row)) return;
-    const date = String(row['Date'] || '').trim();
+    const dateRaw = row['Date'];
+    const date = normalizeDateString(dateRaw);
     const machine_id = String(row['Machine ID'] || '').trim();
     const staff = String(row['Staff'] || '').trim();
     const status = String(row['Status'] || '').trim();
@@ -916,8 +1059,8 @@ function parseDailyLogSheet(wb, machineIds){
     const totalRaw = row['Total Hrs'];
     const remarks = String(row['Remarks'] || '').trim();
 
-    if(!DATE_RE.test(date)){
-      uploadState.errors.push(`Daily Log row ${rowNum}: invalid or missing date ("${date}").`); return;
+    if(!date){
+      uploadState.errors.push(`Daily Log row ${rowNum}: couldn't understand the date ("${dateRaw}"). Try typing it as YYYY-MM-DD (e.g. 2026-08-31) to be unambiguous.`); return;
     }
     if(!machine_id || !machineIds.has(machine_id)){
       uploadState.errors.push(`Daily Log row ${rowNum}: "${machine_id}" is not a known Machine ID.`); return;
@@ -954,7 +1097,8 @@ function parseDieselPurchaseSheet(wb){
   rows.forEach((row, i) => {
     const rowNum = i + 2;
     if(isRowBlank(row)) return;
-    const date = String(row['Date'] || '').trim();
+    const dateRaw = row['Date'];
+    const date = normalizeDateString(dateRaw);
     const quantity = parseFloat(row['Quantity (L)']);
     const storage_location = String(row['Storage Location'] || '').trim();
     const barrelRaw = row['Barrel Count'];
@@ -962,8 +1106,8 @@ function parseDieselPurchaseSheet(wb){
     const bill_no = String(row['Bill No'] || '').trim();
     const remarks = String(row['Remarks'] || '').trim();
 
-    if(!DATE_RE.test(date)){
-      uploadState.errors.push(`Diesel Purchase row ${rowNum}: invalid or missing date ("${date}").`); return;
+    if(!date){
+      uploadState.errors.push(`Diesel Purchase row ${rowNum}: couldn't understand the date ("${dateRaw}"). Try typing it as YYYY-MM-DD (e.g. 2026-08-31) to be unambiguous.`); return;
     }
     if(isNaN(quantity) || quantity <= 0){
       uploadState.errors.push(`Diesel Purchase row ${rowNum}: Quantity (L) must be a number > 0.`); return;
@@ -982,14 +1126,15 @@ function parseDieselIssueSheet(wb, diesetIds){
   rows.forEach((row, i) => {
     const rowNum = i + 2;
     if(isRowBlank(row)) return;
-    const date = String(row['Date'] || '').trim();
+    const dateRaw = row['Date'];
+    const date = normalizeDateString(dateRaw);
     const machine_id = String(row['Machine ID'] || '').trim();
     const quantity = parseFloat(row['Quantity Issued (L)']);
     const issued_by = String(row['Issued By'] || '').trim();
     const remarks = String(row['Remarks'] || '').trim();
 
-    if(!DATE_RE.test(date)){
-      uploadState.errors.push(`Diesel Issue row ${rowNum}: invalid or missing date ("${date}").`); return;
+    if(!date){
+      uploadState.errors.push(`Diesel Issue row ${rowNum}: couldn't understand the date ("${dateRaw}"). Try typing it as YYYY-MM-DD (e.g. 2026-08-31) to be unambiguous.`); return;
     }
     if(!machine_id || !diesetIds.has(machine_id)){
       uploadState.errors.push(`Diesel Issue row ${rowNum}: "${machine_id}" doesn't have its own diesel tank (or isn't a known Machine ID) — Wiresaw Drilling/Machines run off DG Sets/Compressors and can't be issued fuel directly.`); return;
