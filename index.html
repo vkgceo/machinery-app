@@ -6,6 +6,7 @@
 <title>VKG Machinery Status</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
   :root{
     --header:#1A2332; --nav:#2C5F8A; --bg:#F0F4F8; --card:#FFFFFF;
@@ -155,7 +156,7 @@
       <div id="headerExcelActions" class="hidden" style="display:flex; gap:8px; flex:1; flex-wrap:wrap;">
         <a class="btn btn-secondary" href="VKG_Excel_Template.xlsx" download
            style="flex:1; text-decoration:none; padding:6px 10px; font-size:11px;">⬇ Template</a>
-        <button class="btn btn-secondary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="exportCurrentData()">⬇ Export Data</button>
+        <button class="btn btn-secondary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="openExportModal()">⬇ Export Data</button>
         <button class="btn btn-primary" style="flex:1; padding:6px 10px; font-size:11px;" onclick="openUploadModal()">⬆ Upload Excel</button>
       </div>
     </div>
@@ -292,7 +293,31 @@
   </div>
 </div>
 
-
+<!-- ============ EXPORT DATA MODAL (Operator/GM/CEO) ============ -->
+<div class="modal-overlay hidden" id="exportModal">
+  <div class="modal-sheet">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <h3 style="margin:0;">Export Data</h3>
+      <button class="btn btn-secondary" style="width:auto; padding:5px 12px;" onclick="closeExportModal()">✕</button>
+    </div>
+    <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:14px;">
+      Downloads in the same styled format as the template, newest date
+      first, so it doubles as a recovery copy if a local file is ever lost —
+      and can be re-uploaded as-is through Upload Excel.
+    </div>
+    <div class="field">
+      <label>From date</label>
+      <input type="date" id="exportFromDate">
+    </div>
+    <div class="field">
+      <label>To date</label>
+      <input type="date" id="exportToDate">
+    </div>
+    <button class="btn btn-secondary" style="margin-bottom:10px;" onclick="setExportRangeAll()">Use all data instead (no date filter)</button>
+    <div id="exportMsg"></div>
+    <button class="btn btn-primary" id="runExportBtn" onclick="runExport()">Download Excel</button>
+  </div>
+</div>
 
 <script>
 // ============================================================
@@ -867,21 +892,37 @@ function normalizeDateString(raw){
 // ============================================================
 // EXPORT CURRENT DATA — a safety net independent of the Excel template.
 // If someone's local copy of the filled-in template is lost or corrupted,
-// this pulls everything currently in the app into a file with the exact
-// same column layout as the template, so work can continue from the next
-// date without reconstructing anything from memory — and the file can be
-// re-uploaded through Upload Excel later with no conversion needed.
+// this pulls what's currently in the app into a file with the exact same
+// column layout AND the exact same look as the template (colored header,
+// frozen row, dropdowns), so work can continue from the next date without
+// reconstructing anything from memory — and the file can be re-uploaded
+// through Upload Excel later with no conversion needed.
+//
+// TECHNICAL NOTE: the free SheetJS library this app uses for parsing
+// uploads cannot WRITE cell colors/fonts to .xlsx — that's a real,
+// verified limitation of the free build, not a bug. So instead of asking
+// SheetJS to generate a styled file (impossible), this fetches the actual
+// template file already sitting in this repo (which has real styling,
+// built with Python/openpyxl) and surgically replaces just the row data
+// inside its Daily Log / Diesel Purchase / Diesel Issue sheets, reusing
+// the same style IDs the template already defines for the header row (5)
+// and body cells (7 for the date column, 8 for everything else). Every
+// other sheet and every style definition in the file is left untouched,
+// so the colors are guaranteed to be the real ones, not approximated.
+//
 // Available to operator/gm/ceo, matching their shared edit access.
 // ============================================================
 
 // Supabase caps a single request at 1000 rows — page through everything
 // so this keeps working correctly as the tables grow past that.
-async function fetchAllRows(table, columns, orderCols){
+async function fetchAllRows(table, columns, orderCols, fromDate, toDate, dateCol){
   const pageSize = 1000;
   let all = [];
   let from = 0;
   while(true){
     let q = supa.from(table).select(columns).range(from, from + pageSize - 1);
+    if(fromDate) q = q.gte(dateCol, fromDate);
+    if(toDate) q = q.lte(dateCol, toDate);
     orderCols.forEach(([col, asc]) => { q = q.order(col, { ascending: asc }); });
     const { data, error } = await q;
     if(error) throw new Error(`${table}: ${error.message}`);
@@ -892,53 +933,144 @@ async function fetchAllRows(table, columns, orderCols){
   return all;
 }
 
-async function exportCurrentData(){
-  if(!['operator','gm','ceo'].includes(currentRole)){
-    showAppMsg('error', 'You do not have access to export data.');
-    return;
-  }
-  showAppMsg('ok', 'Preparing export...');
+function openExportModal(){
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0, 10);
+  document.getElementById('exportFromDate').value = monthAgo;
+  document.getElementById('exportToDate').value = today;
+  document.getElementById('exportMsg').innerHTML = '';
+  document.getElementById('exportModal').classList.remove('hidden');
+}
+function closeExportModal(){
+  document.getElementById('exportModal').classList.add('hidden');
+}
+function setExportRangeAll(){
+  document.getElementById('exportFromDate').value = '';
+  document.getElementById('exportToDate').value = '';
+}
+
+function escapeXml(s){
+  return String(s).replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));
+}
+
+// Builds a fresh <sheetData>...rows...</sheetData> block, keeping row 1
+// (the header, passed in verbatim from the real template file) untouched,
+// and writing data rows with the template's own existing style IDs.
+function buildSheetDataXml(headerRowXml, rows, colDefs){
+  let xml = '<sheetData>' + headerRowXml;
+  rows.forEach((row, i) => {
+    const r = i + 2; // row 1 is the header
+    let cellsXml = '';
+    colDefs.forEach((col, ci) => {
+      const colLetter = String.fromCharCode(65 + ci); // A, B, C...
+      const style = ci === 0 ? '7' : '8'; // col A (Date) uses style 7, rest use 8 — matches template
+      const val = row[col.key];
+      if(col.type === 'number'){
+        if(val === null || val === undefined || val === ''){
+          cellsXml += `<c r="${colLetter}${r}" s="${style}"/>`;
+        } else {
+          cellsXml += `<c r="${colLetter}${r}" s="${style}" t="n"><v>${Number(val)}</v></c>`;
+        }
+      } else {
+        const text = (val === null || val === undefined) ? '' : String(val);
+        cellsXml += `<c r="${colLetter}${r}" s="${style}" t="inlineStr"><is><t>${escapeXml(text)}</t></is></c>`;
+      }
+    });
+    xml += `<row r="${r}">${cellsXml}</row>`;
+  });
+  xml += '</sheetData>';
+  return xml;
+}
+
+// Replaces one sheet's row data inside its raw XML, preserving everything
+// else (column widths, frozen panes, sheet protection, dropdown ranges).
+function rebuildSheetXml(originalXml, rows, colDefs, colCount){
+  const headerMatch = originalXml.match(/<row r="1">.*?<\/row>/);
+  if(!headerMatch) throw new Error('Could not find header row in template sheet — template may have changed.');
+  const headerRowXml = headerMatch[0];
+
+  const newSheetData = buildSheetDataXml(headerRowXml, rows, colDefs);
+  let newXml = originalXml.replace(/<sheetData>.*?<\/sheetData>/, newSheetData);
+
+  const lastCol = String.fromCharCode(65 + colCount - 1);
+  const lastRow = rows.length + 1;
+  newXml = newXml.replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="A1:${lastCol}${lastRow}"/>`);
+
+  // Extend dropdown/validation ranges past row 500 in case exported data
+  // (or future growth after re-upload) exceeds the template's original bound.
+  newXml = newXml.replace(/(\d+):([A-Z]+)500/g, (m, startRow, col) => `${startRow}:${col}20000`);
+
+  return newXml;
+}
+
+async function runExport(){
+  const btn = document.getElementById('runExportBtn');
+  const msgEl = document.getElementById('exportMsg');
+  const fromDate = document.getElementById('exportFromDate').value || null;
+  const toDate = document.getElementById('exportToDate').value || null;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Preparing export...';
+  msgEl.innerHTML = '';
+
   try {
+    // Fetch the real styled template from this same repo so the export
+    // inherits its actual formatting rather than approximating it.
+    const templateResp = await fetch('VKG_Excel_Template.xlsx');
+    if(!templateResp.ok) throw new Error('Could not load VKG_Excel_Template.xlsx from the repo — make sure it is deployed alongside index.html.');
+    const templateBuf = await templateResp.arrayBuffer();
+    const zip = await JSZip.loadAsync(templateBuf);
+
+    // Latest date first, per request — easiest place to spot recent errors.
     const [dailyLog, dieselPurchase, dieselIssue] = await Promise.all([
-      fetchAllRows('daily_log', 'date, machine_id, staff, status, opening, closing, total_hrs, remarks', [['date', true], ['machine_id', true]]),
-      fetchAllRows('diesel_purchase', 'date, quantity, storage_location, barrel_count, supplier, bill_no, remarks', [['date', true]]),
-      fetchAllRows('diesel_issue', 'date, machine_id, quantity, issued_by, remarks', [['date', true], ['machine_id', true]])
+      fetchAllRows('daily_log', 'date, machine_id, staff, status, opening, closing, total_hrs, remarks',
+        [['date', false], ['machine_id', true]], fromDate, toDate, 'date'),
+      fetchAllRows('diesel_purchase', 'date, quantity, storage_location, barrel_count, supplier, bill_no, remarks',
+        [['date', false]], fromDate, toDate, 'date'),
+      fetchAllRows('diesel_issue', 'date, machine_id, quantity, issued_by, remarks',
+        [['date', false], ['machine_id', true]], fromDate, toDate, 'date')
     ]);
 
-    const wb = XLSX.utils.book_new();
+    const sheetSpecs = [
+      { path: 'xl/worksheets/sheet2.xml', rows: dailyLog, colCount: 8, colDefs: [
+        {key:'date', type:'text'}, {key:'machine_id', type:'text'}, {key:'staff', type:'text'},
+        {key:'status', type:'text'}, {key:'opening', type:'number'}, {key:'closing', type:'number'},
+        {key:'total_hrs', type:'number'}, {key:'remarks', type:'text'}
+      ]},
+      { path: 'xl/worksheets/sheet3.xml', rows: dieselPurchase, colCount: 7, colDefs: [
+        {key:'date', type:'text'}, {key:'quantity', type:'number'}, {key:'storage_location', type:'text'},
+        {key:'barrel_count', type:'number'}, {key:'supplier', type:'text'}, {key:'bill_no', type:'text'}, {key:'remarks', type:'text'}
+      ]},
+      { path: 'xl/worksheets/sheet4.xml', rows: dieselIssue, colCount: 5, colDefs: [
+        {key:'date', type:'text'}, {key:'machine_id', type:'text'}, {key:'quantity', type:'number'},
+        {key:'issued_by', type:'text'}, {key:'remarks', type:'text'}
+      ]}
+    ];
 
-    const dailyLogRows = dailyLog.map(r => ({
-      'Date': r.date, 'Machine ID': r.machine_id, 'Staff': r.staff || '', 'Status': r.status,
-      'Opening Hrs': r.opening, 'Closing Hrs': r.closing, 'Total Hrs': r.total_hrs, 'Remarks': r.remarks || ''
-    }));
-    const wsLog = XLSX.utils.json_to_sheet(dailyLogRows, {
-      header: ['Date','Machine ID','Staff','Status','Opening Hrs','Closing Hrs','Total Hrs','Remarks']
-    });
-    XLSX.utils.book_append_sheet(wb, wsLog, 'Daily Log');
+    for(const spec of sheetSpecs){
+      const file = zip.file(spec.path);
+      if(!file) throw new Error(`Template is missing ${spec.path} — it may be an older/different version.`);
+      const originalXml = await file.async('string');
+      const newXml = rebuildSheetXml(originalXml, spec.rows, spec.colDefs, spec.colCount);
+      zip.file(spec.path, newXml);
+    }
 
-    const purchaseRows = dieselPurchase.map(r => ({
-      'Date': r.date, 'Quantity (L)': r.quantity, 'Storage Location': r.storage_location || '',
-      'Barrel Count': r.barrel_count ?? '', 'Supplier': r.supplier || '', 'Bill No': r.bill_no || '', 'Remarks': r.remarks || ''
-    }));
-    const wsPurchase = XLSX.utils.json_to_sheet(purchaseRows, {
-      header: ['Date','Quantity (L)','Storage Location','Barrel Count','Supplier','Bill No','Remarks']
-    });
-    XLSX.utils.book_append_sheet(wb, wsPurchase, 'Diesel Purchase');
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const rangeLabel = (fromDate || toDate) ? `${fromDate || 'start'}_to_${toDate || 'now'}` : 'all';
+    const filename = `VKG_Machinery_Export_${rangeLabel}.xlsx`;
 
-    const issueRows = dieselIssue.map(r => ({
-      'Date': r.date, 'Machine ID': r.machine_id, 'Quantity Issued (L)': r.quantity,
-      'Issued By': r.issued_by || '', 'Remarks': r.remarks || ''
-    }));
-    const wsIssue = XLSX.utils.json_to_sheet(issueRows, {
-      header: ['Date','Machine ID','Quantity Issued (L)','Issued By','Remarks']
-    });
-    XLSX.utils.book_append_sheet(wb, wsIssue, 'Diesel Issue');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 
-    const today = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(wb, `VKG_Machinery_Export_${today}.xlsx`);
-    showAppMsg('ok', `Exported ${dailyLog.length} Daily Log, ${dieselPurchase.length} Diesel Purchase, ${dieselIssue.length} Diesel Issue rows.`);
+    msgEl.innerHTML = `<div class="msg ok">Exported ${dailyLog.length} Daily Log, ${dieselPurchase.length} Diesel Purchase, ${dieselIssue.length} Diesel Issue rows.</div>`;
   } catch(e){
-    showAppMsg('error', 'Export failed: ' + (e.message || String(e)));
+    msgEl.innerHTML = '<div class="msg error">Export failed: ' + escapeHtml(e.message || String(e)) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Download Excel';
   }
 }
 
